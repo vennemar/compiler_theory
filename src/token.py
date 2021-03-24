@@ -3,7 +3,7 @@
 from enum import unique, Enum, auto
 
 @unique
-class t_type(Enum):
+class tkn_type(Enum):
     # creates an enumeration of valid token types
     # auto will assign a unique number starting at 1 and incrementing
     # single char operators are assigned their ascii char to enable 

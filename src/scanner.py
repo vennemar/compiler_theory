@@ -1,6 +1,6 @@
 ## Scanner
 from token import Token
-from token import t_type as tkn
+from token import tkn_type as tkn
 #===================================================================================
 # Terminal symbols
 
@@ -9,9 +9,11 @@ class Scanner:
     """ scans the file contents and returns tokens or errors"""
     # Setup and Teardown
     def __init__(self, fName, tabsize=4):
+        self.fName = fName
+        self.fd = open(fName, "r")
+        
         self.line = 1
         self.col = 0
-        self.fd = open(fName, "r")
         self._next_char = self.fd.read(1)
         self.tabsize = tabsize
 
