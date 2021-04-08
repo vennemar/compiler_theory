@@ -3,8 +3,8 @@ from token import Token
 from scanner import Scanner
 from parse_tree import * # pylint: disable=unused-wildcard-import
 # ================================================================================
-#  experimental Parser Module
-#=================================================================================
+#  Parser Module
+# ================================================================================
 # builds the parse tree data structure from the token stream
 class Parser():
 
