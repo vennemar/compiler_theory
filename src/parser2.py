@@ -52,6 +52,7 @@ class Parser():
             # check for semicolon at end of statement
             if not self.token_is(tkn.SEMICOLON, consume=True):
                 self.reportUnexpectedToken(expected=';')
+                self.recover_on_error(True)
 
     #==========================================================================
     #  parser interface functions
@@ -59,12 +60,13 @@ class Parser():
 
     def parse_top_level_declaration(self):
         # check for end of top level declerations
-        if self.token_is(tkn.BEGIN):
+        if self.token_is(tkn.BEGIN, consume=True):
             return tkn.BEGIN
         elif self.token_is(tkn.EOF):
             return tkn.EOF
 
-        return self._parseNT_declaration()
+        res, ___ = self._parseNT_declaration()
+        return res
 
     def parse_top_level_statement(self):
 
@@ -78,7 +80,7 @@ class Parser():
                         self.reportError("tokens detected after program terminating symbol '.'")
                         return tkn.EOF # signal end of program (but with errors logged)
                 else:
-                    self.reportUnexpectedToken(expected='.')
+                    self.reportError("expected token '.' after end of program")
                     return tkn.EOF
             else:
                 self.reportUnexpectedToken(expected='program')
@@ -88,7 +90,8 @@ class Parser():
             return tkn.EOF
         else:
             # parse statement
-            return self._parseNT_statement()
+            res, ___ = self._parseNT_statement()
+            return res
 
 
     def parse_program_header(self):
@@ -141,7 +144,7 @@ class Parser():
         self.recover_on_error(err)
         if res != None:
             res.is_global = has_global
-        return res
+        return res, err
 
 
     def _parseNT_procedure_declaration(self):
@@ -163,14 +166,16 @@ class Parser():
 
         if not self.token_is(tkn.COLON, consume=True):
             self.reportUnexpectedToken(expected=':')
+            return None, True
 
         # Parse Type
         ret_type = self._parseNT_type_mark()
         if ret_type == None:
             return None, True
 
-        if self.token != tkn.LEFT_PAREN:
+        if not self.token_is(tkn.LEFT_PAREN, consume=True):
             self.reportUnexpectedToken(expected='(')
+            return None, True
 
         # Parse Parameters
         params = []
@@ -201,10 +206,8 @@ class Parser():
                 self.reportError("unexpected 'end' token")
                 return func, True
             
-            res, err = self._parseNT_variable_declaration()
+            res, err = self._parseNT_declaration()
             func.body.append(res) # append result to function body
-            # call recover on error manually (not called in _parseNT_variable_declaration)
-            self.recover_on_error(err) # recovers to next statement
 
         # statements
         while not self.token_is(tkn.END, consume=True):
@@ -214,8 +217,6 @@ class Parser():
 
             res, err = self._parseNT_statement()
             func.body.append(res)
-            # recover on error is already called by _parseNT_statement
-            #self.recover_on_error(err)
 
         if not self.token_is(tkn.PROCEDURE, consume=True):
             self.reportUnexpectedToken(expected='procedure')
@@ -233,10 +234,13 @@ class Parser():
         if not self.token_is(tkn.ID):
             self.reportError("Expected a valid identifier after token 'variable'")
             return None, True
+        
         name = self.token.value
+        self.next_token()
 
         if not self.token_is(tkn.COLON, consume=True):
             self.reportUnexpectedToken(expected=':')
+            return None, True
 
         # Parse Data Type
         data_type = self._parseNT_type_mark()
@@ -248,10 +252,10 @@ class Parser():
             return None, True
         elif bound != None:  
             # var is an array          
-            return declarationNode(name, data_type, array_size=bound)
+            return declarationNode(name, data_type, array_size=bound), False
         else:
             # var is not an array
-            return declarationNode(name, data_type)
+            return declarationNode(name, data_type), False
 
     def _parseNT_array_index(self, literal_only=True):
         if not self.token_is(tkn.LEFT_BRACKET, consume=True):
@@ -260,12 +264,13 @@ class Parser():
         else:   
             # handle array bounds            
             if literal_only:
-                bound = self._parse_literal()
+                bound, err = self._parse_literal()
             else:
-                bound = self._parseNT_expression()
+                bound, err = self._parseNT_expression()
+            
             if bound != None:
                 if self.token_is(tkn.RIGHT_BRACKET, consume=True):
-                    return bound, False
+                    return bound, err
                 else:
                     self.reportUnexpectedToken(expected=']')
                     return None, True
@@ -312,13 +317,15 @@ class Parser():
         ]
         res, err = self.choose_NT(NT_list)
         self.recover_on_error(err)
-        return res
+        return res, err
 
     def _parseNT_assignment(self):
         """
         <assignment_statement> --> <destination> OP_ASSIGN <expression>
         """
         dest, err1 = self._parseNT_destination()
+        if dest == None:
+            return dest, err1
 
         if not self.token_is(tkn.OP_ASSIGN, consume=True):
             self.reportUnexpectedToken(expected=':=')
@@ -335,8 +342,10 @@ class Parser():
         if not self.token_is(tkn.ID):
             # not an assignment statement
             return None, False
-        name = self.token.value
         
+        name = self.token.value
+        self.next_token()
+
         # check for array index
         index, err = self._parseNT_array_index(literal_only=False)
         if err:
@@ -360,6 +369,9 @@ class Parser():
             return None, True
 
         condition, err = self._parseNT_expression()
+        if condition == None:
+            self.reportError("invalid expression")
+            return None, True
 
         if not self.token_is(tkn.RIGHT_PAREN, consume=True):
             self.reportUnexpectedToken(expected=')')
@@ -377,14 +389,20 @@ class Parser():
                 self.reportError("unexpected EOF")
                 return if_node, True
             elif self.token_is(tkn.END, consume=True):
-                # No else block
-                return if_node, err
+                # No else block, check for if token and return
+                if not self.token_is(tkn.IF, consume=True):
+                    self.reportUnexpectedToken(expected='if')
+                    return if_node, True
+                else:
+                    return if_node, err
+
             else:
                 res, err1 = self._parseNT_statement()
                 err = err or err1
                 if_node.thenBlock.append(res)
 
         # parse else block
+        if_node.elseBlock = []
         while not self.token_is(tkn.END, consume=True):
             if self.token_is(tkn.EOF):
                 self.reportError("unexpected EOF")
@@ -396,8 +414,9 @@ class Parser():
 
         if not self.token_is(tkn.IF, consume=True):
             self.reportUnexpectedToken(expected='if')
-
-        return if_node, err
+            return if_node, True
+        else:
+            return if_node, err
 
     def _parseNT_loop(self):
         """
@@ -465,6 +484,7 @@ class Parser():
         if self.token.type in valid_literals.keys():
             value = self.token.value
             data_type = valid_literals[self.token.type]
+            self.next_token()
             return LiteralExpr(value, data_type), False
         
         return None, False
@@ -490,6 +510,7 @@ class Parser():
         else:
             if self.token.type in [tkn.BOOL_AND, tkn.BOOL_OR]:
                 Op = self.token.type
+                self.next_token()
                 expr, err = self._parseNT_expression()
                 return BinOpExpr(LHS=arithOp, RHS=expr, Op=Op), err
             else:
@@ -509,6 +530,7 @@ class Parser():
         else:
             if self.token.type in [tkn.OP_ADD, tkn.OP_SUB]:
                 Op = self.token.type
+                self.next_token()
                 arithOp, err = self._parseNT_arithOp()
                 return BinOpExpr(LHS=relation, RHS=arithOp, Op=Op), err
             else:
@@ -540,6 +562,7 @@ class Parser():
             ]
             if self.token.type in relation_operators:
                 Op = self.token.type
+                self.next_token()
                 relation, err = self._parseNT_relation()
                 return BinOpExpr(LHS=term, RHS=relation, Op=Op), err
             else:
@@ -557,17 +580,24 @@ class Parser():
         elif factor == None:
             return None, False
         else:
-            Op = self.token.type
-            term, err = self._parseNT_term()
-            return BinOpExpr(LHS=factor, RHS=term, Op=Op), err
-
+            term_operators = [
+                tkn.OP_MUL,
+                tkn.OP_DIV
+            ]
+            if self.token.type in term_operators:
+                Op = self.token.type
+                self.next_token()
+                term, err = self._parseNT_term()
+                return BinOpExpr(LHS=factor, RHS=term, Op=Op), err
+            else:
+                return factor, False
 
     def _parseNT_factor(self):
         """
         <factor>  -->   LEFT_PAREN <expression> RIGHT_PAREN
                     |   <procedure_call>
-                    |   [ OP_SUB ] <name> 
-                    |   [ OP_SUB ] <number> 
+                    |   [ OP_SUB ] <name>
+                    |   [ OP_SUB ] <number>
                     |   STRING
                     |   TRUE
                     |   FALSE
@@ -581,13 +611,14 @@ class Parser():
             has_negative = True
 
         if self.token_is(tkn.ID):
-            name = self.token.value
             call, err = self._parseNT_procedure_call()
             if err:
                 return None, True
             elif call == None:
                 # not a procedure call.
                 # parse variable expression
+                name = self.token.value
+                self.next_token()
                 index, err = self._parseNT_array_index()
                 if err:
                     return None, True
@@ -636,12 +667,24 @@ class Parser():
 
 if __name__ == '__main__':
 
-    fName = "../test/testPgms/correct/logicals.src"
+    #fName = "../test/correct/logicals.src"
+    #fName = "../test/correct/iterativeFib.src"
+    #fName = "../test/correct/math.src"
+    #fName = "../test/correct/multipleProcs.src"
+    #fName = "../test/correct/recursiveFib.src"
+    #fName = "../test/correct/source.src"
+    #fName = "../test/correct/test_heap.src"
+    #fName = "../test/correct/test_program_minimal.src"
+    #fName = "../test/correct/test1.src"
+    fName = "../test/correct/test1b.src"
+    #fName = "../test/correct/test2.src"
+
+
     parser = Parser(fName)
 
     # parse top level module info
     res = parser.parse_program_header()
-    print(res)
+    print("module name: {}".format(res))
 
     # parse top level declarations (variable or function)
     print("Parsing top Level Declarations")

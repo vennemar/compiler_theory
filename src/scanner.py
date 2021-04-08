@@ -1,4 +1,5 @@
 ## Scanner
+from os import path
 from token import Token
 from token import tkn_type as tkn
 #===================================================================================
@@ -15,8 +16,8 @@ class Scanner:
         self._next_char = self.fd.read(1)
         self.tabsize = tabsize
 
-    def __del__(self):
-        self.fd.close()
+    #def __del__(self):
+    #    self.fd.close()
 
     # Character Stream Implementation
 
@@ -63,26 +64,23 @@ class Scanner:
         """
         c = self.getNextChar()
 
-        # check for EOF
-        if c == None:
-            return Token(tkn.EOF, location=(self.line, self.col))        
-
         # Trim leading whitespace characters
         while c.isspace():
             c = self.getNextChar()
 
+        # check for EOF
+        if c == '':
+            return Token(tkn.EOF, location=(self.line, self.col))        
+
         # Comments (not recorded as tokens)
-        if c == '/':
-            print("Comment found!")
+        while c == '/': # loop to handle consecutive comments
+
             ## Single Line Comments
             if self.peekNextChar() == "/":
-                print("single line!")
                 while c != '\n':
                     c = self.getNextChar()
-                print("found new line")
             ## Multi Line Comments
             elif self.peekNextChar() == "*":
-                print("Multi line!")
                 self.getNextChar()
                 openCount = 1
                 closedCount = 0
@@ -101,6 +99,7 @@ class Scanner:
             while c.isspace():
                 c = self.getNextChar()
 
+        
         ## Now any further parsing will generate a token
         token_start = (self.line, self.col)
 
@@ -156,7 +155,7 @@ class Scanner:
         ## the language spec says floats must start with a digit 0-9
         ## so a leading decimal is not handled
         if c.isdigit():
-            value = ""
+            value = c
             while self.peekNextChar().isdigit():
                 value += self.getNextChar()
 
@@ -205,12 +204,12 @@ class Scanner:
             }
 
             ## token is a reserved word
-            if value in reserved_words.keys():
-                return Token(reserved_words[value], token_start)
+            if value.lower() in reserved_words.keys():
+                return Token(reserved_words[value.lower()], token_start)
             
             ## token is an Identifier
             else:
-                return Token(tkn.ID, token_start, value)
+                return Token(tkn.ID, token_start, value.lower())
 
             # Unknown Token... no patterns match
             return Token(tkn.UNKNOWN, token_start)
@@ -218,12 +217,17 @@ class Scanner:
 def main():
     """ for debugging the scanner """
 
-    #fName = "../test/testPgms/correct/iterativeFib.src"
-    fName = "../test/testPgms/correct/logicals.src"
+    #fName = "../test/correct/iterativeFib.src"
+    #fName = "../test/correct/logicals.src"
+    fName = "../test/correct/source.src"
+
+    if not path.exists(fName):
+        print("file does not exist")
+        return False
     scanner = Scanner(fName)
     token = scanner.getToken()
     print(token)
-    while token.type != tkn.EOF:
+    while token != None and token.type != tkn.EOF:
         token = scanner.getToken()
         print(token)
 

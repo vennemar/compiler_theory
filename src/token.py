@@ -74,9 +74,9 @@ class tkn_type(Enum):
 class Token:
     def __init__(self, t_type, location, val=None):
         self.type = t_type
-        self.val = val
+        self.value = val
         self.line = location[0]
         self.col = location[1]
 
     def __str__(self):
-        return "<token {} L{} C{} val={}>".format(self.type, self.line, self.col, self.val)
+        return "<token {} L{} C{} value={}>".format(self.type, self.line, self.col, self.value)
