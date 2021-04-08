@@ -18,13 +18,29 @@ class Parser():
     def __init__(self, fName):
         self.scanner = Scanner(fName)
         self.token = self.scanner.getToken()
-        self.symbol_table = SymbolTable() 
+        self._next_token = self.scanner.getToken()
+        self.codegen_enabled = True # disable on error but continue to parse for debug
 
     def reportError(self, message):
-        self.scanner.reportError(message)
+        """ prints the given error msg """
+        print("Error L{}, C{}: {}".format(self.token.line, self.token.col, message))
+        self.codegen_enabled = False
+
+    def next_token(self):
+        """ gets the next token in the stream"""
+        self.token = self._next_token
+        self._next_token = self.scanner.getToken()
 
     def reportUnexpectedToken(self, expected):
         self.reportError("expected token '{}', found: {}".format(expected, self.token))
+
+    def token_is(tkn_type, consume=False):
+        """ check the token type and consume token if consume=True and token is of tkn_type"""
+    res = self.token.type == tkn_type
+    if consume and res:
+        self.next_token()
+    return res
+
 
 
     def parse_0_or_more(self, NT_parse_func, closing_terminal):
@@ -63,7 +79,7 @@ class Parser():
         """
         <program> --> <program_header> <program_body> PERIOD
         """
-        self.symbol_table
+        
         self.parseNT_program_header()
         self.parseNT_program_body()
 
@@ -80,17 +96,19 @@ class Parser():
         <program_header> --> PROGRAM <identifier> IS
         """
         # PROGRAM
-        if self.token.type != tkn.PROGRAM:
+        if self.token_is(tkn.PROGRAM, consume=True):
             self.reportUnexpectedToken(expected='program')
             return False
         
         # <identifier>
-        if not self.parse_identifier():
-            self.reportError("bad identifier")
+        if self.token_is(tkn.ID):
+            self.reportError("token: {} is Not a valid Module name".format(self.token.value))
             return False
+        codegen.initialize_module(name=self.token.value) 
+        self.next_token()
 
         # IS
-        if self.token.type != tkn.IS:
+        if self.token_is(tkn.IS, consume=True):
             self.reportUnexpectedToken(expected='is')
             return False
 
@@ -122,12 +140,10 @@ class Parser():
         """
         # check optional global
         has_global = False
-        if self.token.type == tkn.GLOBAL:
+        if self.token_is(tkn.GLOBAL, consume=True):
             # handle optional global token
-            has_global = True 
+            has_global = True
 
-        self.token = self.scanner.getToken()
-        
         # check for non-terminal options
         if self.parseNT_procedure_delcaration():
             pass
@@ -155,6 +171,7 @@ class Parser():
         if not self.parseNT_procedure_header():
             # not a procedure declaration
             return False
+            
 
         if not self.parseNT_procedure_body():
             self.reportError("expected procedure body")
@@ -200,14 +217,18 @@ class Parser():
         if self.token != tkn.PROCEDURE:
             # not a procedure header
             return False
+        self.token = self.scanner.getToken()
+    
+        if not self.token.type == tkn.ID:
+            self.reportError("token '{}' is not a valid procedure name".format(self.token.value))
+        procedure_name = token.value
+        self.token = self.scanner.getToken()
 
-        if not self.parse_identifier():
-            self.reportError("identifier")
-        
         if self.token != tkn.COLON:
             self.reportUnexpectedToken(expected=':')
         
-        if not self.parseNT_type_mark():
+        ret_type = self.parseNT_type_mark()
+        if not ret_type:
             self.reportError('Expected a type marking, got {}'.format(self.token))
 
         if self.token != tkn.LEFT_PAREN:
@@ -284,7 +305,7 @@ class Parser():
             return True
 
         if self.token == tkn.ID:
-            parse_identifier() #?
+            # lookup in symbol table and return type Identifier
             return True
         
         # Move enum definition to separate function for readability
@@ -331,7 +352,7 @@ class Parser():
         if self.token.type == tkn.FLOAT:
             return True
 
-        if self.parse_identifier()
+        if self.parse_identifier():
             return True
 
         return False
@@ -390,14 +411,17 @@ class Parser():
         """
         <assignment_statement> --> <destination> OP_ASSIGN <expression>
         """
-
-        if not self.parseNT_destination():
+        dest = self.parseNT_destination()
+        if not dest:
             return False
         
         if self.token.type != tkn.OP_ASSIGN:
             self.reportUnexpectedToken(expected=":=")
-        self.token = self.scanner.getToken()
+        self.token = self.scanner.getToken() 
 
+        expr = self.parseNT_expression():
+        if not expr
+            return False
 
         return True
 
@@ -405,14 +429,16 @@ class Parser():
         """
         <destination> --> <identifier> [LEFT_BRACKET <expression> RIGHT_BRACKET]
         """
-        if not self.parse_identifier():
+        if not self.token.type != tkn.ID:
             return False
+        
 
         self.token = self.scanner.getToken()
         # do identifier stuff
 
         if self.token.type == tkn.LEFT_BRACKET:
             #process array index
+            pass
         self.token = self.scanner.getToken()
 
 
@@ -446,7 +472,6 @@ class Parser():
         if self.token.type != tkn.RIGHT_PAREN:
             self.reportUnexpectedToken(expected=')')
         self.token = self.scanner.getToken()
-
 
         if self.token.type != tkn.THEN:
             self.reportUnexpectedToken(expected='then')
