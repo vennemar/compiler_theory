@@ -1,751 +1,703 @@
-## Parser
 from token import tkn_type as tkn
 from token import Token
 from scanner import Scanner
-
-# Codegen
-import llvm
-import llvm.core as lc
-from symbol_table import * 
-
-# parser will define non-terminals as functions that examine the next token to derive the next terminal function.
-# fun is returned so that it can be called when checking the next symbol
-
-## language spec
-
+from parse_tree import * # pylint: disable=unused-wildcard-import
+# ================================================================================
+#  experimental Parser Module
+#=================================================================================
+# builds the parse tree data structure from the token stream
 class Parser():
 
     def __init__(self, fName):
         self.scanner = Scanner(fName)
         self.token = self.scanner.getToken()
         self._next_token = self.scanner.getToken()
-        self.codegen_enabled = True # disable on error but continue to parse for debug
+
+        self._has_errors = False 
 
     def reportError(self, message):
-        """ prints the given error msg """
         print("Error L{}, C{}: {}".format(self.token.line, self.token.col, message))
-        self.codegen_enabled = False
-
-    def next_token(self):
-        """ gets the next token in the stream"""
-        self.token = self._next_token
-        self._next_token = self.scanner.getToken()
 
     def reportUnexpectedToken(self, expected):
         self.reportError("expected token '{}', found: {}".format(expected, self.token))
 
-    def token_is(tkn_type, consume=False):
-        """ check the token type and consume token if consume=True and token is of tkn_type"""
-    res = self.token.type == tkn_type
-    if consume and res:
-        self.next_token()
-    return res
+    def next_token(self):
+        self.token = self._next_token
+        self._next_token = self.scanner.getToken()
+    
+    def token_is(self, tkn_type, consume=False):
+        res = self.token.type == tkn_type
+        if consume and res:
+            self.next_token()
+        return res
 
+    def choose_NT(self, NT_list):
+        for func in NT_list:
+            res, err = func()
+            if err:
+                return res, err
+            elif res != None:
+                return res, False
+        self.reportError("illegal syntax") # maybe this error could be made more helpful
+        return None, True
 
+    def recover_on_error(self, err):
+        if err:
+            # Error recovery (look for the next semicolon)
+            while not self.token_is(tkn.EOF):
+                if self.token_is(tkn.SEMICOLON, consume=True):
+                    break
+                self.next_token()
+        else:
+            # check for semicolon at end of statement
+            if not self.token_is(tkn.SEMICOLON, consume=True):
+                self.reportUnexpectedToken(expected=';')
+                self.recover_on_error(True)
 
-    def parse_0_or_more(self, NT_parse_func, closing_terminal):
-        """
-        parses productions in the form (<Non terminal>)* closing_terminal
-        """
-        if not isinstance(closing_terminal, list):
-            closing_terminal = [closing_terminal]
+    #==========================================================================
+    #  parser interface functions
+    #==========================================================================
 
-        while self.token.type not in closing_terminal:
-            #check for EOF in loop
-            if self.token.type == tkn.EOF:
-                #self.reportError("unexpected EOF")
-                self.reportUnexpectedToken(expected=closing_terminal)
-                return False 
+    def parse_top_level_declaration(self):
+        # check for end of top level declerations
+        if self.token_is(tkn.BEGIN, consume=True):
+            return tkn.BEGIN
+        elif self.token_is(tkn.EOF):
+            return tkn.EOF
 
-            NT_parse_func() # call parse function for expected Non terminal
-            self.token = self.scanner.getToken()
+        res, ___ = self._parseNT_declaration()
+        return res
 
-        return True
+    def parse_top_level_statement(self):
 
-    # ================================================= #
-    # Non Terminal derivation functions                 #
-    # ================================================= #
-    # Terminals are represented by the tokens
-    # defined in token.py
-    #
-    # Non-terminals are represented by functions that
-    # define production rules for that non terminal.
-    #
-    # production rules are included in comments using 
-    # <name> to denote a non-terminal and the token name 
-    # in all caps to denote a terminal.
-
-    def parseNT_program(self):
-        """
-        <program> --> <program_header> <program_body> PERIOD
-        """
-        
-        self.parseNT_program_header()
-        self.parseNT_program_body()
-
-        if self.token.type == tkn.PERIOD:
-            self.token = self.scanner.getToken()
-            if self.token.type == tkn.EOF:
-                return True # or return None as EOF denotation? we could also use the EOF from the scanner
+        # check for end of program and/or file
+        if self.token_is(tkn.END, consume=True):
+            if self.token_is(tkn.PROGRAM, consume=True):
+                if self.token_is(tkn.PERIOD, consume=True):
+                    if self.token_is(tkn.EOF):
+                        return tkn.EOF # signal end of program
+                    else:
+                        self.reportError("tokens detected after program terminating symbol '.'")
+                        return tkn.EOF # signal end of program (but with errors logged)
+                else:
+                    self.reportError("expected token '.' after end of program")
+                    return tkn.EOF
             else:
-                self.reportError("tokens detected after program terminating symbol '.'")
+                self.reportUnexpectedToken(expected='program')
+                return tkn.EOF
+        elif self.token_is(tkn.EOF):
+            self.reportError("unexpected EOF")
+            return tkn.EOF
+        else:
+            # parse statement
+            res, ___ = self._parseNT_statement()
+            return res
 
 
-    def parseNT_program_header(self):
+    def parse_program_header(self):
         """
         <program_header> --> PROGRAM <identifier> IS
         """
+
         # PROGRAM
-        if self.token_is(tkn.PROGRAM, consume=True):
+        if not self.token_is(tkn.PROGRAM, consume=True):
             self.reportUnexpectedToken(expected='program')
-            return False
+            return None
         
         # <identifier>
-        if self.token_is(tkn.ID):
+        if not self.token_is(tkn.ID):
             self.reportError("token: {} is Not a valid Module name".format(self.token.value))
-            return False
-        codegen.initialize_module(name=self.token.value) 
+            return None
+
+        program_name = self.token.value
         self.next_token()
 
         # IS
-        if self.token_is(tkn.IS, consume=True):
+        if not self.token_is(tkn.IS, consume=True):
             self.reportUnexpectedToken(expected='is')
-            return False
+            return None
 
-        return True
+        return program_name
 
-    def parseNT_program_body(self):
-        """
-        <program_body>  --> (<declaration>)* BEGIN (<statement>)* END PROGRAM
-        """
-        # declerations followed by begin
-        self.parse_0_or_more(self.parseNT_declaration, tkn.BEGIN)
-        self.token = self.scanner.getToken()
+    #==========================================================================
+    #  AST builder functions
+    #==========================================================================
+    # definitions
 
-        # statements followed by end program
-        self.parse_0_or_more(self.parseNT_statement(), tkn.END)
-        self.token = self.scanner.getToken()
-
-        if self.token != tkn.PROGRAM:
-            self.reportUnexpectedToken(expected='program')
-            return False
-
-        return True
-
-    def parseNT_declaration(self):
+    def _parseNT_declaration(self):
         """
         <declaration> -->   [GLOBAL] <procedure_declaration> SEMICOLON
                         |   [GLOBAL] <variable_declaration> SEMICOLON
-                        |   [GLOBAL] <type_declaration> SEMICOLON
         """
-        # check optional global
+
+        # handle optional global token
         has_global = False
         if self.token_is(tkn.GLOBAL, consume=True):
-            # handle optional global token
             has_global = True
 
-        # check for non-terminal options
-        if self.parseNT_procedure_delcaration():
-            pass
-           
-        elif self.parseNT_variable_declaration():
-            pass
+        # check for type of declaration
+        NT_list = [
+            self._parseNT_procedure_declaration,
+            self._parseNT_variable_declaration,
+        ]
+        res, err = self.choose_NT(NT_list)
+        self.recover_on_error(err)
+        if res != None:
+            res.is_global = has_global
+        return res, err
 
-        elif self.parseNT_type_declaration():
-            pass
 
-        else:
-            # maybe report error? maybe wait for a more specific one later on?
-            return False
-        
-        self.token = self.scanner.getToken()
-        if self.token.type == tkn.SEMICOLON:
-            return True
-        else:
-            self.reportError("expected token ';', found {}".format(self.token))
-
-    def parseNT_procedure_delcaration(self):
+    def _parseNT_procedure_declaration(self):
         """
         <procedure_declaration> --> <procedure_header> <procedure_body>
-        """
-        if not self.parseNT_procedure_header():
-            # not a procedure declaration
-            return False
-            
-
-        if not self.parseNT_procedure_body():
-            self.reportError("expected procedure body")
-
-        return True
-
-    def parseNT_variable_declaration(self):
-        """
-        <variable_declaration> --> VARIABLE <identifier> COLON <type_mark> [ LEFT_BRACKET <bound> RIGHT_BRACKET ]
-        """
-        if self.token.type != tkn.VARIABLE:
-            # not a variable declaration
-            return False
-
-        self.token = self.scanner.getToken()
-        if not self.parse_identifier():
-            self.reportError("bad identifier: {}".format(self.token))
-
-        if self.token.type != tkn.COLON:
-            self.reportUnexpectedToken(expected=':')
-        
-        return True
-
-    def parseNT_type_declaration(self):
-        """
-        <type_declaration> --> TYPE <identifier> IS <type_mark>
-        """
-
-        if self.token != tkn.TYPE:
-            # not a type declaration
-            return False
-        
-        if not self.parse_identifier():
-            self.reportError("identifier")
-
-        return True
-
-    def parseNT_procedure_header(self):
-        """
         <procedure_header> --> PROCEDURE <identifier> COLON <type_mark> LEFT_PAREN [<parameter_list>] RIGHT_PAREN
         """
 
-        if self.token != tkn.PROCEDURE:
-            # not a procedure header
-            return False
-        self.token = self.scanner.getToken()
+        ## Procedure Header
+
+        if not self.token_is(tkn.PROCEDURE, consume=True):
+            return None, False # not a procedure declaration
     
-        if not self.token.type == tkn.ID:
+        # Parse Name
+        if not self.token_is(tkn.ID):
             self.reportError("token '{}' is not a valid procedure name".format(self.token.value))
-        procedure_name = token.value
-        self.token = self.scanner.getToken()
+        procedure_name = self.token.value
+        self.next_token()
 
-        if self.token != tkn.COLON:
+        if not self.token_is(tkn.COLON, consume=True):
             self.reportUnexpectedToken(expected=':')
-        
-        ret_type = self.parseNT_type_mark()
-        if not ret_type:
-            self.reportError('Expected a type marking, got {}'.format(self.token))
+            return None, True
 
-        if self.token != tkn.LEFT_PAREN:
+        # Parse Type
+        ret_type = self._parseNT_type_mark()
+        if ret_type == None:
+            return None, True
+
+        if not self.token_is(tkn.LEFT_PAREN, consume=True):
             self.reportUnexpectedToken(expected='(')
+            return None, True
 
-        if not self.parseNT_parameter_list():
-            self.reportError("bad parameter list")
+        # Parse Parameters
+        params = []
+        err = False
+        if not self.token_is(tkn.RIGHT_PAREN, consume=True):
+            param, err = self._parseNT_variable_declaration()
+            params.append(param)    
+            while self.token_is(tkn.COMMA, consume=True):
+                param, err = self._parseNT_variable_declaration()
+                params.append(param)
+                if err:
+                    break
 
-        if self.token != tkn.RIGHT_PAREN:
-            self.reportUnexpectedToken(expected=')')
+            if not self.token_is(tkn.RIGHT_PAREN, consume=True):
+                self.reportUnexpectedToken(expected=')')
+                return None, True
 
-        return True
+        func = functionNode(procedure_name, ret_type, params)        
 
-    def parseNT_parameter_list(self):
-        """
-        <parameter_list>  -->   <parameter> COMMA <parameter_list> 
-                            |   <parameter>
-        """
+        ## Procedure Body
 
-        if not self.parseNT_parameter():
-            return False
+        # declarations
+        while not self.token_is(tkn.BEGIN, consume=True):
+            if self.token_is(tkn.EOF):
+                self.reportError("unexpected EOF")
+                return func, True
+            elif self.token_is(tkn.END):
+                self.reportError("unexpected 'end' token")
+                return func, True
+            
+            res, err = self._parseNT_declaration()
+            func.body.append(res) # append result to function body
 
-        while self.token == tkn.COMMA:
-            if not self.parseNT_parameter_list():
-                self.reportError("additional parameter expected after token ','")
+        # statements
+        while not self.token_is(tkn.END, consume=True):
+            if self.token_is(tkn.EOF):
+                self.reportError("unexpected EOF")
+                return func, True
 
-        return True
+            res, err = self._parseNT_statement()
+            func.body.append(res)
 
-    def parseNT_parameter(self):
-        """
-        <parameter> --> <variable_declaration>
-        """
-        return parseNT_variable_declaration()
-
-    def parseNT_procedure_body(self):
-        """
-        <procedure_body> --> (<declaration>)* BEGIN (<statement>)* END PROCEDURE
-        """
-        
-        # parse declarations if they exist
-        self.parse_0_or_more(self.parseNT_declaration, tkn.BEGIN)
-
-        self.parse_0_or_more(self.parseNT_statement, tkn.END)
-
-        if self.token != tkn.PROCEDURE:
+        if not self.token_is(tkn.PROCEDURE, consume=True):
             self.reportUnexpectedToken(expected='procedure')
-
-        return True
-
-    def parseNT_type_mark(self):
-        """
-        <type_mark>   -->   INT_TYPE 
-                        |   FLOAT_TYPE
-                        |   STRING_TYPE
-                        |   BOOL_TYPE
-                        |   <identifier>
-                        |   ENUM_TYPE LEFT_CURLY <identifier> ( COMMA <identifier> )* RIGHT_CURLY
-        """
-
-        if self.token == tkn.INT_TYPE:
-            # do stuff
-            return True
-
-        if self.token == tkn.FLOAT_TYPE:
-            #do stuff
-            return True
-
-        if self.token == tkn.STRING_TYPE:
-            # do stuff
-            return True
-
-        if self.token == tkn.BOOL_TYPE:
-            # do stuff
-            return True
-
-        if self.token == tkn.ID:
-            # lookup in symbol table and return type Identifier
-            return True
         
-        # Move enum definition to separate function for readability
-        if self.parseNT_enum_definition():
-            return True
-        return False
-    
-    def parseNT_enum_definition(self):
+        return func, False
+
+    def _parseNT_variable_declaration(self):
         """
-        ENUM_TYPE LEFT_CURLY <identifier> ( COMMA <identifier> )* RIGHT_CURLY
+        <variable_declaration> --> VARIABLE <identifier> COLON <type_mark> [ LEFT_BRACKET <bound> RIGHT_BRACKET ]
         """
+        if not self.token_is(tkn.VARIABLE, consume=True):
+            return None, False
 
-        if self.token != tkn.ENUM_TYPE:
-            # not an enum declaration
-            return False
-
-        if self.token != LEFT_CURLY:
-            self.reportUnexpectedToken(expected='{')
-        self.token = self.scanner.getToken()
-
-        if not self.parse_identifier():
-            self.reportError("identifier expected")
-        self.token = self.scanner.getToken()
-
-        while self.token == tkn.COMMA:
-            if not self.parse_identifier():
-                self.reportError("identifier expected")
-            self.token = self.scanner.getToken()
-
-        if self.token != tkn.RIGHT_CURLY:
-            self.reportUnexpectedToken(expected="}")
-
-        return True
-
-    def parseNT_bound(self):
-        """
-        for array size specification
-        <bound> --> <number>
-        """
+        # Parse Name
+        if not self.token_is(tkn.ID):
+            self.reportError("Expected a valid identifier after token 'variable'")
+            return None, True
         
-        if self.token.type == tkn.INTEGER:
-            return True
+        name = self.token.value
+        self.next_token()
 
-        if self.token.type == tkn.FLOAT:
-            return True
+        if not self.token_is(tkn.COLON, consume=True):
+            self.reportUnexpectedToken(expected=':')
+            return None, True
 
-        if self.parse_identifier():
-            return True
+        # Parse Data Type
+        data_type = self._parseNT_type_mark()
+        if data_type == None:
+            return None, True
 
-        return False
+        bound, err = self._parseNT_array_index()
+        if err:
+            return None, True
+        elif bound != None:  
+            # var is an array          
+            return declarationNode(name, data_type, array_size=bound), False
+        else:
+            # var is not an array
+            return declarationNode(name, data_type), False
 
-    def parseNT_statement(self):
+    def _parseNT_array_index(self, literal_only=True):
+        if not self.token_is(tkn.LEFT_BRACKET, consume=True):
+            # not an array
+            return None, False
+        else:   
+            # handle array bounds            
+            if literal_only:
+                bound, err = self._parse_literal()
+            else:
+                bound, err = self._parseNT_expression()
+            
+            if bound != None:
+                if self.token_is(tkn.RIGHT_BRACKET, consume=True):
+                    return bound, err
+                else:
+                    self.reportUnexpectedToken(expected=']')
+                    return None, True
+            else:
+                self.reportError("Array bounds must be given by a valid literal")
+                return None, True
+
+    def _parseNT_type_mark(self):
+        """ gets valid type marking """
+        type_list = [
+            tkn.INT_TYPE,
+            tkn.STRING_TYPE,
+            tkn.FLOAT_TYPE,
+            tkn.BOOL_TYPE,
+            ]
+
+        if not self.token.type in type_list:
+            # check for Enum
+            if self.token_is(tkn.ID):
+                res = self.token.value
+            else:
+                self.reportError("{} is not a valid data type".format(self.token))
+                return None       
+        else:
+            res = self.token.type
+        self.next_token()
+        return res
+
+    #==========================================================================
+    # statements
+
+    def _parseNT_statement(self):
         """
-        NOTE: does a procedure call fit in here?
-
         <statement>   -->   <assignment_statement> SEMICOLON
                         |   <if_statement> SEMICOLON
                         |   <loop_statement> SEMICOLON
                         |   <return_statement> SEMICOLON
         """
-        # add some kind of return to statement on failure?
+        NT_list = [
+            self._parseNT_assignment,
+            self._parseNT_if,
+            self._parseNT_loop,
+            self._parseNT_return
+        ]
+        res, err = self.choose_NT(NT_list)
+        self.recover_on_error(err)
+        return res, err
 
-        if self.parseNT_assignment_statement():
-            pass
-
-        elif self.parseNT_if_statement():
-            pass
-
-        elif self.parseNT_loop_statement():
-            pass
-
-        elif self.parseNT_return_statement():
-            pass
-
-        else:
-            return False
-
-        if self.token.type != tkn.SEMICOLON:
-            self.reportUnexpectedToken(expected=';')
-        self.token = self.scanner.getToken()
-
-        return True
-
-    def parseNT_procedure_call(self):
-        """
-        <procedure_call> --> LEFT_PAREN [<argument_list>] RIGHT_PAREN
-        """
-
-        if self.token.type != tkn.LEFT_PAREN:
-            return False
-        self.token = self.scanner.getToken()
-
-        if not self.parseNT_argument_list():
-            self.reportError("bad argument list")
-
-        if self.token.type != tkn.RIGHT_PAREN:
-            self.reportUnexpectedToken(expected=')')
-        self.token = self.scanner.getToken()
-
-        return True
-
-    def parseNT_assignment_statement(self):
+    def _parseNT_assignment(self):
         """
         <assignment_statement> --> <destination> OP_ASSIGN <expression>
         """
-        dest = self.parseNT_destination()
-        if not dest:
-            return False
+        dest, err1 = self._parseNT_destination()
+        if dest == None:
+            return dest, err1
+
+        if not self.token_is(tkn.OP_ASSIGN, consume=True):
+            self.reportUnexpectedToken(expected=':=')
+            return None, True
         
-        if self.token.type != tkn.OP_ASSIGN:
-            self.reportUnexpectedToken(expected=":=")
-        self.token = self.scanner.getToken() 
+        expr, err2 = self._parseNT_expression()
 
-        expr = self.parseNT_expression():
-        if not expr
-            return False
+        return AssignmentNode(dest, expr), (err1 or err2)
 
-        return True
-
-    def parseNT_destination(self):
+    def _parseNT_destination(self):
         """
         <destination> --> <identifier> [LEFT_BRACKET <expression> RIGHT_BRACKET]
         """
-        if not self.token.type != tkn.ID:
-            return False
+        if not self.token_is(tkn.ID):
+            # not an assignment statement
+            return None, False
         
+        name = self.token.value
+        self.next_token()
 
-        self.token = self.scanner.getToken()
-        # do identifier stuff
-
-        if self.token.type == tkn.LEFT_BRACKET:
-            #process array index
-            pass
-        self.token = self.scanner.getToken()
-
-
-        if not self.parseNT_expression():
-            self.reportError("invalid expression")
-        
-        if self.token.type != tkn.RIGHT_BRACKET:
-            self.reportUnexpectedToken(expected=']')
-        self.token = self.scanner.getToken()
-
-
-        return True
-
-    def parseNT_if_statement(self):
+        # check for array index
+        index, err = self._parseNT_array_index(literal_only=False)
+        if err:
+            return None, True
+        elif index != None:
+            # var is an array
+            return VariableExpr(name=name, data_type=None, array_index=index), False
+        else:
+            # var is not an array
+            return VariableExpr(name=name, data_type=None), False
+    
+    def _parseNT_if(self):
         """
         <if_statement> --> IF LEFT_PAREN <expression> RIGHT_PAREN THEN (<statement>)* [ ELSE (<statement>)* ] END IF
         """
-
-        if self.token.type != tkn.IF:
-            return False
-        self.token = self.scanner.getToken()
-
-        if self.token.type != tkn.LEFT_PAREN:
+        if not self.token_is(tkn.IF, consume=True):
+            return None, False
+        
+        if not self.token_is(tkn.LEFT_PAREN, consume=True):
             self.reportUnexpectedToken(expected='(')
-        self.token = self.scanner.getToken()
+            return None, True
 
-
-        if not self.parseNT_expression():
+        condition, err = self._parseNT_expression()
+        if condition == None:
             self.reportError("invalid expression")
+            return None, True
 
-        if self.token.type != tkn.RIGHT_PAREN:
+        if not self.token_is(tkn.RIGHT_PAREN, consume=True):
             self.reportUnexpectedToken(expected=')')
-        self.token = self.scanner.getToken()
+            return None, True
 
-        if self.token.type != tkn.THEN:
+        if not self.token_is(tkn.THEN, consume=True):
             self.reportUnexpectedToken(expected='then')
-        self.token = self.scanner.getToken()
+            return None, True
 
-        self.parse_0_or_more(self.parseNT_expression, [tkn.THEN, tkn.END])
+        if_node = IfNode(condition)
 
-        if self.token.type == tkn.THEN:
-            self.token = self.scanner.getToken()
-        self.parse_0_or_more(self.parseNT_expression, tkn.END)
+        # parse then block
+        while not self.token_is(tkn.ELSE, consume=True):
+            if self.token_is(tkn.EOF):
+                self.reportError("unexpected EOF")
+                return if_node, True
+            elif self.token_is(tkn.END, consume=True):
+                # No else block, check for if token and return
+                if not self.token_is(tkn.IF, consume=True):
+                    self.reportUnexpectedToken(expected='if')
+                    return if_node, True
+                else:
+                    return if_node, err
 
-        if self.token.type != tkn.IF:
+            else:
+                res, err1 = self._parseNT_statement()
+                err = err or err1
+                if_node.thenBlock.append(res)
+
+        # parse else block
+        if_node.elseBlock = []
+        while not self.token_is(tkn.END, consume=True):
+            if self.token_is(tkn.EOF):
+                self.reportError("unexpected EOF")
+                return if_node, True
+            
+            res, err1 = self._parseNT_statement()
+            err = err or err1
+            if_node.elseBlock.append(res)
+
+        if not self.token_is(tkn.IF, consume=True):
             self.reportUnexpectedToken(expected='if')
+            return if_node, True
+        else:
+            return if_node, err
 
-        return True
-
-    def parseNT_loop_statement(self):
+    def _parseNT_loop(self):
         """
         <loop_statement> --> FOR LEFT_PAREN <assignment_statement> SEMICOLON <expression> RIGHT_PAREN (<statement>)* END FOR
         """
-
-        if self.token.type != tkn.FOR:
-            return False
-        self.token = self.scanner.getToken()
-
-        if self.token.type != tkn.LEFT_PAREN:
+        if not self.token_is(tkn.FOR, consume=True):
+            return None, False
+        
+        if not self.token_is(tkn.LEFT_PAREN, consume=True):
             self.reportUnexpectedToken(expected='(')
+            return None, True
 
-        return True
+        start, err = self._parseNT_assignment()
+        self.recover_on_error(err)
+        
+        end, err1 = self._parseNT_expression()
+        if not self.token_is(tkn.RIGHT_PAREN, consume=True):
+            self.reportUnexpectedToken(expected=')')
+            return None, True
 
-    def parseNT_return_statement(self):
+        loop = LoopNode(start, end)
+        err = err or err1
+        
+        while not self.token_is(tkn.END, consume=True):
+            if self.token_is(tkn.EOF):
+                self.reportError("unexpected EOF")
+                return loop, True
+            
+            res, err1 = self._parseNT_statement()
+            err = err or err1
+            loop.body.append(res)
+
+        if not self.token_is(tkn.FOR, consume=True):
+            self.reportUnexpectedToken(expected='for')
+
+        return loop, err
+
+    def _parseNT_return(self):
         """
         <return_statement> --> RETURN <expression>
         """
-
-        if self.token.type != tkn.RETURN:
-            return False
-
-        if not self.parseNT_expression():
-            self.reportError("invalid expression")
-
-        return True
-
-    def parseNT_expression(self):
-        """ original 
-        <expression>  -->   <expression> BOOL_AND <arithOp>
-                        |   <expression> BOOL_OR <arithOp>
-                        |   <arithOp>
-                        |   [ BOOL_NOT ] <arithOp>
-
-        re-written to avoid infinate recursive calls
-
-        <expression>  -->   <arithOp> BOOL_AND <expression>
-                        |   <arithOp> BOOL_OR <expression>
-                        |   <arithOp>
-                        |   [ BOOL_NOT ] <arithOp>
+        if not self.token_is(tkn.RETURN, consume=True):
+            return None, False
         
+        expr, err = self._parseNT_expression()
+        if err:
+            return None, True
+        else:
+            return returnExpr(expr=expr), False
+
+    def _parse_literal(self):
         """
-
-        has_bool_not = False
-        if self.token.type == tkn.BOOL_NOT:
-            has_bool_not = True
-            self.token = self.scanner.getToken()
-
-        if not self.parseNT_arithOp():
-            if has_bool_not:
-                self.reportError("expected an expression following token 'not'")
-            else:
-                return False
-
-        if self.token.type == tkn.BOOL_AND:
-            self.token = self.scanner.getToken()
-            if not self.parseNT_expression():
-                self.reportError("expected expression after token '&' ")
-        elif self.token.type == tkn.BOOL_OR:
-            self.token = self.scanner.getToken()
-            if not self.parseNT_expression():
-                self.reportError("expected expression after token '|' ")
+        <literal> --> <number>
+                    | STRING
+                    | TRUE
+                    | FALSE
+        """
+        valid_literals = {
+            tkn.INTEGER : tkn.INT_TYPE,
+            tkn.FLOAT   : tkn.FLOAT_TYPE,
+            tkn.STRING  : tkn.STRING_TYPE,
+            tkn.TRUE    : tkn.BOOL_TYPE,
+            tkn.FALSE   : tkn.BOOL_TYPE
+        }
+        if self.token.type in valid_literals.keys():
+            value = self.token.value
+            data_type = valid_literals[self.token.type]
+            self.next_token()
+            return LiteralExpr(value, data_type), False
         
-        return True
+        return None, False
 
-    def parseNT_arithOp(self):
+    def _parseNT_expression(self):
+        """
+         <expression>  -->  <arithOp> BOOL_AND <expression>
+                        |   <arithOp> BOOL_OR <expression>
+                        |   [ BOOL_NOT ] <arithOp>
+        """
+        # check for optional boolean NOT
+        has_bool_not = False
+        if self.token_is(tkn.BOOL_NOT,  consume=True):
+            has_bool_not = True
+
+        arithOp, err = self._parseNT_arithOp()
+        if err:
+            # pass error up
+            return arithOp, err
+        elif arithOp == None:
+            # not an arithOp
+            return None, has_bool_not # if BOOL_NOT is present then arithOp was expected, so flag err
+        else:
+            if self.token.type in [tkn.BOOL_AND, tkn.BOOL_OR]:
+                Op = self.token.type
+                self.next_token()
+                expr, err = self._parseNT_expression()
+                return BinOpExpr(LHS=arithOp, RHS=expr, Op=Op), err
+            else:
+                return arithOp, False
+
+    def _parseNT_arithOp(self):
         """
         <arithOp> -->   <relation> OP_ADD <arithOp>
                     |   <relation> OP_SUB <arithOp>
                     |   <relation>
         """
+        relation, err = self._parseNT_relation()
+        if err:
+            return relation, err
+        elif relation == None:
+            return None, False
+        else:
+            if self.token.type in [tkn.OP_ADD, tkn.OP_SUB]:
+                Op = self.token.type
+                self.next_token()
+                arithOp, err = self._parseNT_arithOp()
+                return BinOpExpr(LHS=relation, RHS=arithOp, Op=Op), err
+            else:
+                return relation, False
 
-        if not self.parseNT_relation():
-            return False
-
-        if self.token.type == tkn.OP_ADD:
-            self.token = self.scanner.getToken()
-            if not self.parseNT_arithOp():
-                self.reportError("invalid operand after token '+'")
-        elif self.token.type == tkn.OP_SUB:
-            self.token = self.scanner.getToken()
-            if not self.parseNT_arithOp():
-                self.reportError("invalid operand after token '-'")
-
-        return True
-
-    def parseNT_relation(self):
+    def _parseNT_relation(self):
         """
-        <relation> -->  <relation> OP_LT <term>
-                     |  <relation> OP_GE <term>
-                     |  <relation> OP_LE <term>
-                     |  <relation> OP_GT <term>
-                     |  <relation> OP_EQ <term>
-                     |  <relation> OP_NE <term>
+        <relation> -->  <term> OP_LT <relation>
+                     |  <term> OP_GE <relation>
+                     |  <term> OP_LE <relation>
+                     |  <term> OP_GT <relation>
+                     |  <term> OP_EQ <relation> 
+                     |  <term> OP_NE <relation>
                      |  <term>
         """
-        # Get Left hand side of the relation
-        LHS = self.parseNT_term()
-        if not LHS:
-            return None
+        term, err = self._parseNT_term()
+        if err:
+            return term, err
+        elif term == None:
+            return None, False
+        else:
+            relation_operators = [
+                tkn.OP_LT,
+                tkn.OP_GE,
+                tkn.OP_LE,
+                tkn.OP_GT,
+                tkn.OP_EQ,
+                tkn.OP_NE
+            ]
+            if self.token.type in relation_operators:
+                Op = self.token.type
+                self.next_token()
+                relation, err = self._parseNT_relation()
+                return BinOpExpr(LHS=term, RHS=relation, Op=Op), err
+            else:
+                return term, False
 
-
-        if self.token.type == tkn.OP_LT:
-            self.token = self.scanner.getToken()
-            RHS = self.parseNT_relation():
-            if not RHS:
-                self.reportError("invalid operand after token '<'")
-                return None
-            return builder.fcmp('<', LHS, RHS, name='booltmp')
-
-
-        elif self.token.type == tkn.OP_GE:
-            self.token = self.scanner.getToken()
-
-            if not self.parseNT_relation():
-                self.reportError("invalid operand after token '>='")
-        elif self.token.type == tkn.OP_LE:
-            self.token = self.scanner.getToken()
-            if not self.parseNT_relation():
-                self.reportError("invalid operand after token '<='")
-        elif self.token.type == tkn.OP_GT:
-            self.token = self.scanner.getToken()
-            if not self.parseNT_relation():
-                self.reportError("invalid operand after token '>'")
-        elif self.token.type == tkn.OP_EQ:
-            self.token = self.scanner.getToken()
-            if not self.parseNT_relation():
-                self.reportError("invalid operand after token '=='")
-        elif self.token.type == tkn.OP_NE:
-            self.token = self.scanner.getToken()
-            if not self.parseNT_relation():
-                self.reportError("invalid operand after token '!='")
-
-        return None
-    
-    def parseNT_term(self):
+    def _parseNT_term(self):
         """
-        <term> -->  <term> OP_MUL <factor>
-                 |  <term> OP_DIV <factor>
+        <term> -->  <factor> OP_MUL <term>
+                 |  <factor> OP_DIV <term>
                  |  <factor>
         """
-        if not self.parseNT_factor():
-            return False
+        factor, err = self._parseNT_factor()
+        if err:
+            return factor, err
+        elif factor == None:
+            return None, False
+        else:
+            term_operators = [
+                tkn.OP_MUL,
+                tkn.OP_DIV
+            ]
+            if self.token.type in term_operators:
+                Op = self.token.type
+                self.next_token()
+                term, err = self._parseNT_term()
+                return BinOpExpr(LHS=factor, RHS=term, Op=Op), err
+            else:
+                return factor, False
 
-        if self.token.type == tkn.OP_MUL:
-            self.token = self.scanner.getToken()
-            if not self.parseNT_factor():
-                self.reportError("invalid operand after token '*'")
-        if self.token.type == tkn.OP_DIV:
-            self.token = self.scanner.getToken()
-            if not self.parseNT_factor():
-                self.reportError("invalid operand after token '/'")
-
-        return True
-
-    def parseNT_factor(self):
+    def _parseNT_factor(self):
         """
         <factor>  -->   LEFT_PAREN <expression> RIGHT_PAREN
                     |   <procedure_call>
-                    |   [ OP_MINUS ] <name> 
-                    |   [ OP_MINUS ] <number> 
+                    |   [ OP_SUB ] <name>
+                    |   [ OP_SUB ] <number>
                     |   STRING
                     |   TRUE
                     |   FALSE
         """
 
-        #check for name or number with optional minus
-        has_minus = False
-        if self.token.type == tkn.OP_SUB:
-            has_minus = True
-            self.token = self.scanner.getToken()
+        if self.token_is(tkn.LEFT_PAREN, consume=True):
+            return self._parseNT_expression()
+        
+        has_negative = False
+        if self.token_is(tkn.OP_SUB, consume=True):
+            has_negative = True
 
-        if self.parseNT_name():
-            # do stuff
-            return True
-        elif self.token.type == tkn.INTEGER:
-            # do stuff
-            return True
-        elif self.token.type == tkn.FLOAT:
-            # do stuff
-            return True
-        elif has_minus:
-            self.reportError("expected a name or number following token '-'")
+        if self.token_is(tkn.ID):
+            call, err = self._parseNT_procedure_call()
+            if err:
+                return None, True
+            elif call == None:
+                # not a procedure call.
+                # parse variable expression
+                name = self.token.value
+                self.next_token()
+                index, err = self._parseNT_array_index()
+                if err:
+                    return None, True
+                else:
+                    return VariableExpr(name, data_type=None, array_index=index, has_negative=has_negative), False
+            else:
+                return call, False
+        else:
+            return self._parse_literal()
+            
 
-        # check for parenthetical expression
-        if self.token.type == tkn.LEFT_PAREN:
-            self.token = self.scanner.getToken()
-            if not self.parseNT_expression():
-                self.reportError("expected expression after token '('")
+    def _parseNT_procedure_call(self):
 
-            if self.token.type != tkn.RIGHT_PAREN:
+        if not self.token_is(tkn.ID):
+            return None, False
+        name = self.token.value
+
+        if not self._next_token.type == tkn.LEFT_PAREN:
+            return None, False
+        
+        self.next_token()
+        self.next_token()
+
+        func = CallExpr(name)
+        
+        if self.token_is(tkn.RIGHT_PAREN, consume=True):
+            return func, False
+        else:
+            p, err = self._parseNT_expression()
+            func.params.append(p)
+            while self.token_is(tkn.COMMA, consume=True):
+                p, err1 = self._parseNT_expression()
+                err = err or err1
+                func.params.append(p)
+
+            if not self.token_is(tkn.RIGHT_PAREN, consume=True):                
                 self.reportUnexpectedToken(expected=')')
-            self.token = self.scanner.getToken()
-
-        # check for procedure call
-        elif self.parseNT_procedure_call()
-        return True
-
-    def parseNT_name(self, with_identifier=True):
-        """
-        <name> ::= <identifier> [ LEFT_BRACKET <expression> RIGHT_BRACKET ]
-        """
-        if with_identifier:
-            if not self.parse_identifier():
-                return False
+                return func, True
+            else:
+                return func, err
 
 
-        if self.token.type == tkn.LEFT_BRACKET:
-            self.token = self.scanner.getToken()
+#=============================================================================
+#  debuging test code
+#=============================================================================
 
-            if not self.parseNT_expression():
-                self.reportError("invalid expression after token '[")
+if __name__ == '__main__':
 
-            if self.token.type != tkn.RIGHT_BRACKET:
-                self.reportUnexpectedToken(expected=']')
-        elif not with_identifier:
-            return False
-
-        return True
-
-
-    def parseNT_argument_list(self):
-        """
-        <argument_list>   -->   <expression> COMMA <argument_list>
-                            |   <expression>
-        """
-            if not self.parseNT_expression():
-                self.reportError("invalid expression")
-
-        while self.token.type == tkn.COMMA:
-            self.token = self.scanner.getToken()
-            if not self.parseNT_expression():
-                self.reportError("invalid expression")
-
-        return True
-
-    def parseNT_name_or_procedure():
-        """
-        <identifier> [ LEFT_BRACKET <expression> RIGHT_BRACKET ]
-        <identifier> LEFT_PAREN [<argument_list>] RIGHT_PAREN
-
-        """
-
-        if not self.parse_identifier()
-            return False
-
-        if self.parseNT_procedure_call():
-            return True
-
-        if self.parseNT_name(with_identifier=False):
-            return True
+    #fName = "../test/correct/logicals.src"
+    #fName = "../test/correct/iterativeFib.src"
+    #fName = "../test/correct/math.src"
+    #fName = "../test/correct/multipleProcs.src"
+    #fName = "../test/correct/recursiveFib.src"
+    #fName = "../test/correct/source.src"
+    #fName = "../test/correct/test_heap.src"
+    #fName = "../test/correct/test_program_minimal.src"
+    #fName = "../test/correct/test1.src"
+    fName = "../test/correct/test1b.src"
+    #fName = "../test/correct/test2.src"
 
 
-    def parse_identifier(self):
-        if self.token.type != tkn.ID:
-            return False
+    parser = Parser(fName)
 
-        self.last_id = self.token.value
-        self.symbol_table.add_id(self.token.value)
-        self.token = self.scanner.getToken()
-        return True
+    # parse top level module info
+    res = parser.parse_program_header()
+    print("module name: {}".format(res))
+
+    # parse top level declarations (variable or function)
+    print("Parsing top Level Declarations")
+    res = parser.parse_top_level_declaration()
+    while res != tkn.BEGIN:
+        print(res)
+        res = parser.parse_top_level_declaration()
+
+    print("==== found begin ====")
+    print("Parsing Top Level Statements")
+    res = parser.parse_top_level_statement()
+    while res != tkn.EOF:
+        print(res)
+        res = parser.parse_top_level_statement()
+
+    print("end of file")
