@@ -1,52 +1,93 @@
-from llvmlite import ir
-# from ctypes import *
+from llvmlite import ir, binding
 import llvmlite.binding as llvm
 
-#================================
+from symbol_table import SymbolTable
 from token import tkn_type as tkn
-from symbol_table import SymbolTable, Symbol
+from parser import Parser
+
+# ========================= #
+# IR Builder                #
+# ========================= #
 
 class Builder():
-    def __init__(self):
-        self.symbol_table = SymbolTable()
+    """ manages the in memory IR for LLVM """ 
+    
+    def __init__(self, input_fName, output_fName):
+        self.symbolTable = SymbolTable()
+        self.parser = Parser(input_fName)
+        self.output_fName = output_fName
+        self._has_errors = False
 
-    def get_ir_type(self, tkn_type, is_array=False, length=None):
-        type_map = {
-            tkn.INT_TYPE    : ir.IntType(32),
-            tkn.FLOAT_TYPE  : ir.FloatType, # TODO: research how this works
-            tkn.BOOL_TYPE   : ir.IntType(1),
-            tkn.STRING_TYPE : ir.IntType(8) 
-            # a char is an 8 bit int, so strings must have is_array=True and length set
-        }
-
-        if is_array:
-            if length <= 0:
-                return (None, "array bounds must be greater than 0")
-            return ir.ArrayType(self.get_ir_type(tkn_type), length)
-        else:
-            return type_map[tkn_type]
-
+        # llvm setup
+        binding.initialize()
+        binding.initialize_native_target()
+        binding.initialize_native_asmprinter()
+    
+    def has_errors(self):
+        """ checks the flags for scanner, parser or codegen errors"""
+        return self._has_errors or self.parser._has_errors or self.parser.scanner._has_errors
 
     def initialize_module(self, name):
+        # create module
         self.module = ir.Module(name=name)
-        self.builder = ir.IRBuilder()
+        self.module.triple = binding.get_default_triple()
 
-    def create_function_prototype(self, name, retType, params):
-        for i in range(len(params)):
-            params_ir += self.get_ir_type(params[0])
-            
-        fType = ir.FunctionType(self.get_ir_type(retType), params_ir)
-        func = ir.Function(self.module, fType, name=name)
-        for i in range(len(params)):
-            func.args[i].name = params[i][1]
-        
-        # add func to symbol table?
-        self.symbol_table.add_id(name, func, fType, id_type='function')
+        # create main function
+        func_type = ir.FunctionType(ir.VoidType(), [], False)
+        base_func = ir.Function(self.module, func_type, name="main")
+        block = base_func.append_basic_block(name="entry")
 
-        # set code insertion point to the start of the function
-        entryBlock = func.append_basic_block('entry')
-        self.builder.goto_block(entryBlock)
+        # create llvm ir builder and set at start of the main block
+        self.builder = ir.IRBuilder(block)
 
+    def output_ir(self):
+        # signal return from main function
+        # self.builder.ret_void()
+        output = str(self.module)
+        print(output)
+        with open(self.output_fName, "w") as fd:
+            fd.write(output)
         
-    def create_binOp():
-        
+    def generate_module_code(self):
+        """ runs the parse loop and calls codegen functions for the input program"""
+
+        # parse top level module info
+        moduleName = self.parser.parse_program_header()
+        if not moduleName:
+            print("could not parse module header")
+            return None
+        self.initialize_module(moduleName)
+        print("generating module: {}".format(moduleName))
+
+        # parse top level declarations (variable or function)
+        print("generating Declarations")
+        res = self.parser.parse_top_level_declaration()
+        while res != tkn.BEGIN:
+            if res != None and (not self.has_errors()):
+                ir = res.codegen(self.builder, self.symbolTable, self.module)
+                if ir == None:
+                    self._has_errors = True
+                    print("\n".join(res.getErrors()))
+            res = self.parser.parse_top_level_declaration()
+
+        print("generating main body")
+        res = self.parser.parse_top_level_statement()
+        while res != tkn.EOF:
+            if res != None and (not self.has_errors()):
+                ir = res.codegen(self.builder, self.symbolTable, self.module)
+                if ir == None:
+                    self._has_errors = True
+                    print("\n".join(res.getErrors()))
+            res = self.parser.parse_top_level_statement()
+
+        print("writing IR to LLVM assembly\n") 
+        self.output_ir()
+
+
+if __name__ == '__main__':
+
+    input_fName = "../test/correct/math.src"
+    output_fName = "out.txt"
+    codegen = Builder(input_fName, output_fName)
+    codegen.generate_module_code()
+    # GAAAAAHAHAHA

@@ -7,12 +7,10 @@ from parse_tree import * # pylint: disable=unused-wildcard-import
 # ================================================================================
 # builds the parse tree data structure from the token stream
 class Parser():
-
     def __init__(self, fName):
         self.scanner = Scanner(fName)
         self.token = self.scanner.getToken()
         self._next_token = self.scanner.getToken()
-
         self._has_errors = False 
 
     def reportError(self, message):
@@ -162,6 +160,7 @@ class Parser():
         if not self.token_is(tkn.ID):
             self.reportError("token '{}' is not a valid procedure name".format(self.token.value))
         procedure_name = self.token.value
+        line = self.token.line
         self.next_token()
 
         if not self.token_is(tkn.COLON, consume=True):
@@ -193,7 +192,7 @@ class Parser():
                 self.reportUnexpectedToken(expected=')')
                 return None, True
 
-        func = functionNode(procedure_name, ret_type, params)        
+        func = functionNode(procedure_name, ret_type, params, line=line)        
 
         ## Procedure Body
 
@@ -236,6 +235,7 @@ class Parser():
             return None, True
         
         name = self.token.value
+        line = self.token.line
         self.next_token()
 
         if not self.token_is(tkn.COLON, consume=True):
@@ -251,11 +251,11 @@ class Parser():
         if err:
             return None, True
         elif bound != None:  
-            # var is an array          
-            return declarationNode(name, data_type, array_size=bound), False
+            # var is an array
+            return declarationNode(name, data_type, line=line, array_size=bound), False
         else:
             # var is not an array
-            return declarationNode(name, data_type), False
+            return declarationNode(name, data_type, line=line), False
 
     def _parseNT_array_index(self, literal_only=True):
         if not self.token_is(tkn.LEFT_BRACKET, consume=True):
@@ -327,13 +327,14 @@ class Parser():
         if dest == None:
             return dest, err1
 
+        line = self.token.line
         if not self.token_is(tkn.OP_ASSIGN, consume=True):
             self.reportUnexpectedToken(expected=':=')
             return None, True
         
         expr, err2 = self._parseNT_expression()
 
-        return AssignmentNode(dest, expr), (err1 or err2)
+        return AssignmentNode(dest, expr, line), (err1 or err2)
 
     def _parseNT_destination(self):
         """
@@ -344,6 +345,7 @@ class Parser():
             return None, False
         
         name = self.token.value
+        line = self.token.line
         self.next_token()
 
         # check for array index
@@ -352,10 +354,10 @@ class Parser():
             return None, True
         elif index != None:
             # var is an array
-            return VariableExpr(name=name, data_type=None, array_index=index), False
+            return VariableExpr(name=name, data_type=None, array_index=index, line=line), False
         else:
             # var is not an array
-            return VariableExpr(name=name, data_type=None), False
+            return VariableExpr(name=name, data_type=None, line=line), False
     
     def _parseNT_if(self):
         """
@@ -364,6 +366,7 @@ class Parser():
         if not self.token_is(tkn.IF, consume=True):
             return None, False
         
+        line = self.token.line
         if not self.token_is(tkn.LEFT_PAREN, consume=True):
             self.reportUnexpectedToken(expected='(')
             return None, True
@@ -381,7 +384,7 @@ class Parser():
             self.reportUnexpectedToken(expected='then')
             return None, True
 
-        if_node = IfNode(condition)
+        if_node = IfNode(condition, line)
 
         # parse then block
         while not self.token_is(tkn.ELSE, consume=True):
@@ -429,6 +432,7 @@ class Parser():
             self.reportUnexpectedToken(expected='(')
             return None, True
 
+        line = self.token.line
         start, err = self._parseNT_assignment()
         self.recover_on_error(err)
         
@@ -437,7 +441,7 @@ class Parser():
             self.reportUnexpectedToken(expected=')')
             return None, True
 
-        loop = LoopNode(start, end)
+        loop = LoopNode(start, end, line=line)
         err = err or err1
         
         while not self.token_is(tkn.END, consume=True):
@@ -461,11 +465,12 @@ class Parser():
         if not self.token_is(tkn.RETURN, consume=True):
             return None, False
         
+        line = self.token.line
         expr, err = self._parseNT_expression()
         if err:
             return None, True
         else:
-            return returnExpr(expr=expr), False
+            return returnExpr(expr=expr, line=line), False
 
     def _parse_literal(self):
         """
@@ -483,9 +488,10 @@ class Parser():
         }
         if self.token.type in valid_literals.keys():
             value = self.token.value
+            line = self.token.line
             data_type = valid_literals[self.token.type]
             self.next_token()
-            return LiteralExpr(value, data_type), False
+            return LiteralExpr(value, data_type, line=line), False
         
         return None, False
 
@@ -510,9 +516,10 @@ class Parser():
         else:
             if self.token.type in [tkn.BOOL_AND, tkn.BOOL_OR]:
                 Op = self.token.type
+                line = self.token.line
                 self.next_token()
                 expr, err = self._parseNT_expression()
-                return BinOpExpr(LHS=arithOp, RHS=expr, Op=Op), err
+                return BinOpExpr(LHS=arithOp, RHS=expr, Op=Op, line=line), err
             else:
                 return arithOp, False
 
@@ -530,9 +537,10 @@ class Parser():
         else:
             if self.token.type in [tkn.OP_ADD, tkn.OP_SUB]:
                 Op = self.token.type
+                line = self.token.line
                 self.next_token()
                 arithOp, err = self._parseNT_arithOp()
-                return BinOpExpr(LHS=relation, RHS=arithOp, Op=Op), err
+                return BinOpExpr(LHS=relation, RHS=arithOp, Op=Op, line=line), err
             else:
                 return relation, False
 
@@ -562,9 +570,10 @@ class Parser():
             ]
             if self.token.type in relation_operators:
                 Op = self.token.type
+                line = self.token.line
                 self.next_token()
                 relation, err = self._parseNT_relation()
-                return BinOpExpr(LHS=term, RHS=relation, Op=Op), err
+                return BinOpExpr(LHS=term, RHS=relation, Op=Op, line=line), err
             else:
                 return term, False
 
@@ -586,9 +595,10 @@ class Parser():
             ]
             if self.token.type in term_operators:
                 Op = self.token.type
+                line = self.token.line
                 self.next_token()
                 term, err = self._parseNT_term()
-                return BinOpExpr(LHS=factor, RHS=term, Op=Op), err
+                return BinOpExpr(LHS=factor, RHS=term, Op=Op, line=line), err
             else:
                 return factor, False
 
@@ -618,12 +628,13 @@ class Parser():
                 # not a procedure call.
                 # parse variable expression
                 name = self.token.value
+                line = self.token.line
                 self.next_token()
                 index, err = self._parseNT_array_index()
                 if err:
                     return None, True
                 else:
-                    return VariableExpr(name, data_type=None, array_index=index, has_negative=has_negative), False
+                    return VariableExpr(name, data_type=None, array_index=index, has_negative=has_negative, line=line), False
             else:
                 return call, False
         else:
@@ -635,14 +646,14 @@ class Parser():
         if not self.token_is(tkn.ID):
             return None, False
         name = self.token.value
-
+        line = self.token.line
         if not self._next_token.type == tkn.LEFT_PAREN:
             return None, False
         
         self.next_token()
         self.next_token()
 
-        func = CallExpr(name)
+        func = CallExpr(name, line=line)
         
         if self.token_is(tkn.RIGHT_PAREN, consume=True):
             return func, False

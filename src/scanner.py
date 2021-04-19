@@ -15,6 +15,7 @@ class Scanner:
         self.col = 0
         self._next_char = self.fd.read(1)
         self.tabsize = tabsize
+        self._has_errors = False
 
     #def __del__(self):
     #    self.fd.close()
@@ -212,6 +213,7 @@ class Scanner:
                 return Token(tkn.ID, token_start, value.lower())
 
             # Unknown Token... no patterns match
+            self.reportError("unidentifiable token")
             return Token(tkn.UNKNOWN, token_start)
 
 def main():
