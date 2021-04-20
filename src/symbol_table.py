@@ -17,20 +17,28 @@ class SymbolTable():
     def update(self, symbol):
         """ returns (result, err) as a tuple, err is None on a success"""
         # check local scope
-        if symbol.name in self.locals[-1].keys():
-            old = self.locals[-1][symbol.name]
-            if old.type == symbol.type and old.id_type == symbol.id_type:
-                return False, "variable {} expected a value of type {}".format(old.name, old.type)
-            self.locals[-1][symbol.name] = symbol
+
+        i = len(self.locals) -1
+        while i >= 0:
+            if symbol.name in self.locals[i].keys():
+                old = self.locals[i][symbol.name]
+                if old.type == symbol.type and old.id_type == symbol.id_type:
+                    self.locals[i][symbol.name] = symbol
+                    return True 
+                else:
+                    return False, "variable {} expected a value of type {}".format(old.name, old.type)
+            i -= 1
+
         # check global scope
-        elif symbol.name in self.globals.keys():
+        if symbol.name in self.globals.keys():
             old = self.globals[symbol.name]
             if old.type == symbol.type and old.id_type == symbol.id_type:
                 return False, "identifier {} was expected as a {} of type {}".format(old.name, old.id_type, old.type)
             self.globals[symbol.name] = symbol
+            return True
         else:
             return False
-        return True
+
 
     def add(self, symbol, is_global=False):
         """ add a new symbol to the symbol table if not a duplicate"""
@@ -49,12 +57,15 @@ class SymbolTable():
         self.locals.append({})
 
     def popLocal(self):
-        self.locals.remove(-1)
+        self.locals.pop()
 
     def get(self, name):
-        if name in self.locals[-1].keys():
-            return self.locals[-1][name]
-        elif name in  self.globals.keys():
+        i = len(self.locals) -1
+        while i >= 0:
+            if name in self.locals[i].keys():
+                return self.locals[i][name]
+            i -= 1
+        if name in  self.globals.keys():
             return self.globals[name]
         else:
             return None
@@ -74,10 +85,3 @@ class SymbolTable():
             return ir.ArrayType(self.get_ir_type(tkn_type), length)
         else:
             return type_map[tkn_type]
-
-
-
-    #def __getattribute__(self, name):
-    #    return self.get(name)
-
-    

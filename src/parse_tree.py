@@ -85,13 +85,13 @@ class BinOpExpr(exprNode):
                 # INTEGER operations
                 self.data_type = tkn.INT_TYPE
                 if self.Op == tkn.OP_ADD:
-                    res, __ = builder.sadd_with_overflow(LHS_val, RHS_val, name="addTmp")
+                    res = builder.add(LHS_val, RHS_val, name="addTmp")
                     return res
                 elif self.Op == tkn.OP_SUB:
-                    res, __ = builder.ssub_with_overflow(LHS_val, RHS_val, name="subTmp")
+                    res = builder.sub(LHS_val, RHS_val, name="subTmp")
                     return res
                 elif self.Op == tkn.OP_MUL:
-                    res, __ = builder.smul_with_overflow(LHS_val, RHS_val, name="mulTmp")
+                    res = builder.mul(LHS_val, RHS_val, name="mulTmp")
                     return res
                 elif self.Op == tkn.OP_DIV:
                     res = builder.sdiv(LHS_val, RHS_val, name="divTmp")
@@ -171,7 +171,6 @@ class UnaryOpExpr(exprNode):
 class VariableExpr(exprNode):
     def __init__(self, name, data_type, line, array_index=None, has_negative=False):
         self.name = name
-        self.type = data_type
         self.array_index = array_index
         self.has_negative = has_negative
         self.line = line
@@ -182,7 +181,7 @@ class VariableExpr(exprNode):
         return self.toString()
 
     def toString(self, level=0):
-        out = "variable ('{}', {}, negative={})".format(self.name, self.type, self.has_negative)
+        out = "variable ('{}', {}, negative={})".format(self.name, self.data_type, self.has_negative)
         if self.array_index:
             out += " index={}".format(self.array_index)
         return out
@@ -197,32 +196,32 @@ class VariableExpr(exprNode):
         if res == None:
             self.errList.append((self.line, "variable {} is undefined".format(self.name)))
             return None
+        self.data_type = res.type
         return res.value
 
 class LiteralExpr(exprNode):
     def __init__(self, value, data_type, line):
         self.value = value
-        self.type = data_type
         self.line = line
         self.errList = []
-        self.data_type = None
+        self.data_type = data_type
 
     def __str__(self):
         return self.toString()
 
     def toString(self, level=0):
-        return "Literal {}: value={}".format(self.type, self.value)
+        return "Literal {}: value={}".format(self.data_type, self.value)
 
     def codegen(self, builder, symbolTable, module=None):
 
-        ir_type = symbolTable.get_ir_type(self.type)
-        if self.type == tkn.INT_TYPE:
+        ir_type = symbolTable.get_ir_type(self.data_type)
+        if self.data_type == tkn.INT_TYPE:
             val = int(self.value)
-        elif self.type == tkn.FLOAT_TYPE:
+        elif self.data_type == tkn.FLOAT_TYPE:
             val = float(self.value)
-        elif self.type == tkn.BOOL_TYPE:
+        elif self.data_type == tkn.BOOL_TYPE:
             val = 0 if self.value == "false" else 1
-        elif self.type == tkn.STRING_TYPE:
+        elif self.data_type == tkn.STRING_TYPE:
             val = self.value
         else:
             self.errList.append((self.line, "literal value has an undefined type"))
@@ -264,7 +263,7 @@ class CallExpr(exprNode):
                 return None
             args.append(p_val)
 
-        return builder.call(func, args)
+        return builder.call(func, args, name="res")
 
 class returnExpr(exprNode):
     def __init__(self, expr, line):
@@ -286,6 +285,11 @@ class returnExpr(exprNode):
         if expr_val == None:
             self.errList += self.expr.errList
             return None
+        
+        if builder.block.is_terminated:
+            self.errList.append(self.line, "return after termination of code block")
+            return None
+
         return builder.ret(expr_val)
 
 class AssignmentNode(parseTreeNode):
@@ -352,6 +356,7 @@ class declarationNode(parseTreeNode):
             val = 0
         initial_val = ir.Constant(ir_type, val)
         symbol = Symbol(self.name, initial_val, self.type)
+        
         if symbolTable.add(symbol, is_global=self.is_global):
             return initial_val
         else:
@@ -383,30 +388,42 @@ class IfNode(parseTreeNode):
         return out
 
     def codegen(self, builder, symbolTable, module=None):
+        
         cond_val = self.condition.codegen(builder, symbolTable)
         if cond_val == None:
             self.errList += self.condition.errList
             return None
 
+        thenBB = builder.append_basic_block(name="thenBlock")
+        mergeBB = builder.append_basic_block(name="mergeBlock")
         if self.elseBlock != None:
-            with builder.if_else(cond_val) as (thenIR, elseIR):
-                with thenIR:
-                    for statement in self.thenBlock:
-                        res = statement.codegen(builder, symbolTable)
-                        if res == None:
-                            self.errList += statement.errList
-                with elseIR:
-                    for statement in self.elseBlock: # pylint: disable=not-an-iterable
-                        res = statement.codegen(builder, symbolTable)
-                        if res == None:
-                            self.errList += statement.errList
+            # create else block and add branch
+            elseBB = builder.append_basic_block(name="elseblock")
+            builder.cbranch(cond_val, thenBB, elseBB)
+            # codegen else block
+            builder.position_at_start(elseBB)
+            for statement in self.elseBlock: # pylint: disable=not-an-iterable
+                res = statement.codegen(builder, symbolTable)
+                if res == None:
+                    self.errList += statement.errList
+            # branch to merge block at end of else
+            if not builder.block.is_terminated: 
+                builder.branch(mergeBB)
         else:
-            with builder.if_else(cond_val) as thenIR:
-                for statement in self.thenBlock:
-                    res = statement.codegen(builder, symbolTable)
-                    if res == None:
-                        self.errList += statement.errList
-        return cond_val # idk what to return here to indicate success
+            # add branch that without else block
+            builder.cbranch(cond_val, thenBB, mergeBB)
+        # codegen for then block
+        builder.position_at_start(thenBB)
+        for statement in self.thenBlock: # pylint: disable=not-an-iterable
+            res = statement.codegen(builder, symbolTable)
+            if res == None:
+                self.errList += statement.errList
+        # branch to merge block at end of then block
+        # check in case a return statement terminates the block
+        if not builder.block.is_terminated: 
+            builder.branch(mergeBB)
+        builder.position_at_start(mergeBB)
+        return cond_val
 
 class LoopNode(parseTreeNode):
     def __init__(self, start, end, line):
@@ -500,11 +517,33 @@ class functionNode(parseTreeNode):
             self.errList.append(self.line, "duplicate declaration")
             return None
 
-        # make new basic block
-        entryBB = builder.append_basic_block(name="funcEntry")
-        builder.position_at_start(entryBB)
+        # add local scope and populate with params
+        symbolTable.pushLocal()
+        for i, var in enumerate(func.args):
+            symbol = Symbol(self.params[i].name, var, self.params[i].type)
+            if not symbolTable.add(symbol):
+                self.errList.append(self.line, "duplicate parameter declaration")
+                return None
+
+        # make new function builder and add entry
+        entryBB = func.append_basic_block(name="funcEntry")
+        func_builder = ir.IRBuilder(entryBB) 
+        has_errors = False
         for statement in self.body:
-            res = statement.codegen(builder, symbolTable)
+            res = statement.codegen(func_builder, symbolTable)
             if res == None:
-                self.errList += statement.errList
+                has_errors = True
+            else:
+                last_stmt = res
+            
+        # remove local scope and handle errors
+        symbolTable.popLocal()
+        if has_errors:
+            self.errList += statement.errList
+            return None
+        elif not func_builder.block.is_terminated:
+            func_builder.ret(last_stmt) 
+            # not sure if this is defined anywhere in the language spec,
+            # but sample correct programs return values with no explicit return statement
+            # Im assuming then that an implicit return is allowed
         return func

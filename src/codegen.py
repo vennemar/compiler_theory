@@ -1,9 +1,10 @@
 from llvmlite import ir, binding
 import llvmlite.binding as llvm
 
-from symbol_table import SymbolTable
+from symbol_table import SymbolTable, Symbol
 from token import tkn_type as tkn
-from parser import Parser
+# no name in module is a bug with pylint? Parser definitely exists.
+from parser import Parser # pylint: disable=no-name-in-module
 
 # ========================= #
 # IR Builder                #
@@ -32,6 +33,9 @@ class Builder():
         self.module = ir.Module(name=name)
         self.module.triple = binding.get_default_triple()
 
+        # load builtin I/O functions
+        self.load_builtins()
+
         # create main function
         func_type = ir.FunctionType(ir.VoidType(), [], False)
         base_func = ir.Function(self.module, func_type, name="main")
@@ -39,6 +43,27 @@ class Builder():
 
         # create llvm ir builder and set at start of the main block
         self.builder = ir.IRBuilder(block)
+
+
+    def load_builtins(self):
+        """ create builtin get and put functions (empty for now)"""
+        # name returnType Param
+        builtins = [
+            ("putbool",    ir.VoidType(), ir.IntType(1)),
+            ("putstring",  ir.VoidType(), ir.PointerType(ir.IntType(8))),
+            ("putinteger", ir.VoidType(), ir.IntType(32)),
+            ("putfloat",   ir.VoidType(), ir.FloatType()),
+            ("getbool",    ir.IntType(1), ir.VoidType()),
+            ("getstring",  ir.PointerType(ir.IntType(8)), ir.VoidType()),
+            ("getinteger", ir.IntType(32),   ir.VoidType()),
+            ("getfloat",   ir.FloatType(), ir.VoidType() )
+        ]
+
+        for entry in builtins:
+            fType = ir.FunctionType(entry[1], [entry[2]])
+            func = ir.Function(self.module, fType, name=entry[0])
+            symbol = Symbol(entry[0], func, fType, id_type='function')
+            self.symbolTable.add(symbol)
 
     def output_ir(self):
         # signal return from main function
@@ -58,9 +83,7 @@ class Builder():
             return None
         self.initialize_module(moduleName)
         print("generating module: {}".format(moduleName))
-
-        # parse top level declarations (variable or function)
-        print("generating Declarations")
+        # parse and generate top level declarations (variable or function)
         res = self.parser.parse_top_level_declaration()
         while res != tkn.BEGIN:
             if res != None and (not self.has_errors()):
@@ -69,8 +92,7 @@ class Builder():
                     self._has_errors = True
                     print("\n".join(res.getErrors()))
             res = self.parser.parse_top_level_declaration()
-
-        print("generating main body")
+        # parse and generate top level statements
         res = self.parser.parse_top_level_statement()
         while res != tkn.EOF:
             if res != None and (not self.has_errors()):
@@ -80,13 +102,17 @@ class Builder():
                     print("\n".join(res.getErrors()))
             res = self.parser.parse_top_level_statement()
 
-        print("writing IR to LLVM assembly\n") 
+        print("writing IR to LLVM assembly\n")
         self.output_ir()
 
 
 if __name__ == '__main__':
 
     input_fName = "../test/correct/math.src"
+    # input_fName = "../test/correct/test_program_minimal.src"
+    
+    # input_fName = "../test/correct/test_heap.src"
+
     output_fName = "out.txt"
     codegen = Builder(input_fName, output_fName)
     codegen.generate_module_code()

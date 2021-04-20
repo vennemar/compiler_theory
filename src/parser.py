@@ -288,14 +288,10 @@ class Parser():
             ]
 
         if not self.token.type in type_list:
-            # check for Enum
-            if self.token_is(tkn.ID):
-                res = self.token.value
-            else:
-                self.reportError("{} is not a valid data type".format(self.token))
-                return None       
-        else:
-            res = self.token.type
+            self.reportError("{} is not a valid data type".format(self.token))
+            return None       
+
+        res = self.token.type
         self.next_token()
         return res
 
