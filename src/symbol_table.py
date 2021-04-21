@@ -2,17 +2,18 @@ from token import tkn_type as tkn
 from llvmlite import ir
 
 class Symbol():
-    def __init__(self, name, value, data_type, id_type='variable'):
+    def __init__(self, name, value, data_type, id_type='variable', unique_name=None):
         self.name = name
         self.value = value
         self.type = data_type
         self.id_type = id_type
-
+        self.unique_name = unique_name
 
 class SymbolTable():
     def __init__(self):
         self.globals = {}
         self.locals = [{}]
+        self.namespaces = ['main']
 
     def update(self, symbol):
         """ returns (result, err) as a tuple, err is None on a success"""
@@ -53,11 +54,20 @@ class SymbolTable():
             self.locals[-1].update(entry)
         return True
 
-    def pushLocal(self):
+    def getNameSpace(self):
+        """ return the current namespace"""
+        return self.namespaces[-1]
+
+    def pushLocal(self, namespace):
+        """ adds a local scope and assigned it a name for 
+            the purpose of llvm level function signature resolution
+        """
         self.locals.append({})
+        self.namespaces.append(namespace)
 
     def popLocal(self):
         self.locals.pop()
+        self.namespaces.pop()
 
     def get(self, name):
         i = len(self.locals) -1

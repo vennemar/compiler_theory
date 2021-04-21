@@ -113,9 +113,9 @@ class Builder():
 if __name__ == '__main__':
 
     # input_fName = "../test/correct/iterativeFib.src"
-    # input_fName = "../test/correct/logicals.src" # TODO Fix string param passing
+    input_fName = "../test/correct/logicals.src" # TODO Fix string param passing
     # input_fName = "../test/correct/math.src"
-    # input_fName = "../test/correct/multipleProcs.src" # TODO duplicate name err in function generation... rename?
+    # input_fName = "../test/correct/multipleProcs.src"
     # input_fName = "../test/correct/recursiveFib.src"
     # input_fName = "../test/correct/source.src"
     # input_fName = "../test/correct/test_heap.src"

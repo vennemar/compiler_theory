@@ -562,20 +562,24 @@ class functionNode(parseTreeNode):
 
     def codegen(self, builder, symbolTable, module):
 
+        # generate function unique identifier (qualified by namespace) 
+        ns = symbolTable.getNameSpace()
+        unique_name = self.name if ns == "main" else "{}.{}".format(ns, self.name)
+
         params_ir = [symbolTable.get_ir_type(param.type) for param in self.params]
         fType = ir.FunctionType(symbolTable.get_ir_type(self.retType), params_ir)
-        func = ir.Function(module, fType, name=self.name)
+        func = ir.Function(module, fType, name=unique_name)
         for i in range(len(self.params)):
             func.args[i].name = self.params[i].name
         
         # add func to symboltable
-        symbol = Symbol(self.name, func, self.retType, id_type='function')
+        symbol = Symbol(self.name, func, self.retType, id_type='function', unique_name=unique_name)
         if not symbolTable.add(symbol):
             self.errList.append(self.line, "duplicate declaration")
             return None
 
-        # add local scope and populate with params
-        symbolTable.pushLocal()
+        # add function's local scope and populate with params
+        symbolTable.pushLocal(unique_name)
         for i, var in enumerate(func.args):
             symbol = Symbol(self.params[i].name, var, self.params[i].type)
             if not symbolTable.add(symbol):
