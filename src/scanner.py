@@ -162,6 +162,7 @@ class Scanner:
 
             ## number is floating point
             if self.peekNextChar() == '.':
+                c = self.getNextChar()
                 value += c
                 while self.peekNextChar().isdigit():
                     value += self.getNextChar()
@@ -221,7 +222,8 @@ def main():
 
     #fName = "../test/correct/iterativeFib.src"
     #fName = "../test/correct/logicals.src"
-    fName = "../test/correct/source.src"
+    #fName = "../test/correct/source.src"
+    fName = "../test/correct/test1b.src"
 
     if not path.exists(fName):
         print("file does not exist")

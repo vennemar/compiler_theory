@@ -26,7 +26,7 @@ class SymbolTable():
                     self.locals[i][symbol.name] = symbol
                     return True 
                 else:
-                    return False, "variable {} expected a value of type {}".format(old.name, old.type)
+                    return False, "variable {} expected a(n) {} of type {}".format(old.name, old.id_type, old.type)
             i -= 1
 
         # check global scope
@@ -73,10 +73,10 @@ class SymbolTable():
     def get_ir_type(self, tkn_type, is_array=False, length=None):
         type_map = {
             tkn.INT_TYPE    : ir.IntType(32),
-            tkn.FLOAT_TYPE  : ir.FloatType, # TODO: research how this works
+            tkn.FLOAT_TYPE  : ir.FloatType(), 
             tkn.BOOL_TYPE   : ir.IntType(1),
             tkn.STRING_TYPE : ir.IntType(8) 
-            # a char is an 8 bit int, so strings must have is_array=True and length set
+            # a char is an 8 bit int, so strings longet than 1 char must have is_array=True and length set
         }
 
         if is_array:

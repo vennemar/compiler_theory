@@ -58,18 +58,17 @@ class BinOpExpr(exprNode):
         if not RHS_val:
             self.errList += self.LHS.errList
             return None
+        # handle array element extraction
+        if isinstance(self.LHS, VariableExpr):
+            if self.LHS.array_index != None:
+                LHS_val = builder.extract_value(LHS_val, int(self.LHS.array_index.value), name="itemTmp")
 
-        # check operands for type compatability
-        if not self._check_operand_types():
-            err = "type {} and {} are not compatible under the operation {}".format(
-                self.LHS.data_type,
-                self.RHS.data_type,
-                self.Op.type
-            )
-            self.errList.append((self.line, err))
-            return None
+        if isinstance(self.RHS, VariableExpr):
+            if self.RHS.array_index != None:
+                RHS_val = builder.extract_value(RHS_val, int(self.RHS.array_index.value), name="itemTmp")
 
-        # call llvm codegen for given operator and types
+        # check operands for type compatability, then
+        # call llvm codegen for given operator and operand types
         numeric_types = [tkn.INT_TYPE, tkn.FLOAT_TYPE]
         relation_ops = {
                 tkn.OP_LT : "<",
@@ -79,27 +78,26 @@ class BinOpExpr(exprNode):
                 tkn.OP_EQ : "==",
                 tkn.OP_NE : "!="
         }
-
         if self.LHS.data_type == self.RHS.data_type:
             if self.LHS.data_type == tkn.INT_TYPE:
                 # INTEGER operations
                 self.data_type = tkn.INT_TYPE
                 if self.Op == tkn.OP_ADD:
-                    res = builder.add(LHS_val, RHS_val, name="addTmp")
-                    return res
+                    return builder.add(LHS_val, RHS_val, name="addTmp")
                 elif self.Op == tkn.OP_SUB:
-                    res = builder.sub(LHS_val, RHS_val, name="subTmp")
-                    return res
+                    return builder.sub(LHS_val, RHS_val, name="subTmp")
                 elif self.Op == tkn.OP_MUL:
-                    res = builder.mul(LHS_val, RHS_val, name="mulTmp")
-                    return res
+                    return builder.mul(LHS_val, RHS_val, name="mulTmp")
                 elif self.Op == tkn.OP_DIV:
-                    res = builder.sdiv(LHS_val, RHS_val, name="divTmp")
+                    return builder.sdiv(LHS_val, RHS_val, name="divTmp")
+                elif self.Op == tkn.BOOL_AND:
+                    return builder.and_(LHS_val, RHS_val, name="andTmp")
+                elif self.Op == tkn.BOOL_OR:
+                    return builder.or_(LHS_val, RHS_val, name="orTmp")
                 elif self.Op in relation_ops.keys():
                     # compare and set data_type to bool
-                    res = builder.icmp_signed(relation_ops[self.Op], LHS_val, RHS_val, name="boolTmp")
                     self.data_type = tkn.BOOL_TYPE
-                    return res
+                    return builder.icmp_signed(relation_ops[self.Op], LHS_val, RHS_val, name="boolTmp")
 
         elif self.LHS.data_type in numeric_types and \
              self.RHS.data_type in numeric_types:
@@ -129,8 +127,11 @@ class BinOpExpr(exprNode):
 
         elif self.LHS.data_type == tkn.STRING_TYPE:
             # STRING operations
-            # scary... lets come back to this one
-            pass
+            # strings have no operations defined by the language 
+            # spec other than assignment and equality checking
+            # strings are basically character arrays.
+            if self.Op == tkn.OP_EQ:
+                pass # TODO
         elif self.LHS.data_type == tkn.BOOL_TYPE and \
              self.RHS.data_type == tkn.BOOL_TYPE:
             # BOOL Operations
@@ -166,7 +167,35 @@ class UnaryOpExpr(exprNode):
         return out
 
     def codegen(self, builder, symbolTable, module=None):
-        pass
+        # codegen each operand and check for errors
+        expr_val = self.expr.codegen(builder, symbolTable)
+        if expr_val == None:
+            self.errList += self.expr.errList
+            return None
+        
+        # handle array element extraction
+        if isinstance(self.expr, VariableExpr):
+            if self.expr.array_index != None:
+                expr_val = builder.extract_value(expr_val, int(self.expr.array_index.value), name="itemTmp")
+
+        # check types and codegen
+        self.data_type = self.expr.data_type
+        if self.Op == tkn.OP_SUB:
+            if self.expr.data_type == tkn.INT_TYPE:
+                return builder.neg(expr_val, name="intTmp")
+            elif self.expr.data_type == tkn.FLOAT_TYPE:
+                return builder.fneg(expr_val, name="floatTmp")
+            else:
+                self.errList.append(self.line, "non numeric types cannot be negative")
+                return None
+        elif self.Op == tkn.BOOL_NOT:
+            if self.expr.data_type == tkn.INT_TYPE:
+                return builder.not_(expr_val, name="intTmp")
+            elif self.expr.data_type == tkn.BOOL_TYPE:
+                return builder.not_(expr_val, name="boolTmp")
+            else:
+                self.errList.append(self.line, "operation 'NOT' must have operand of type integer or bool")
+                return None
 
 class VariableExpr(exprNode):
     def __init__(self, name, data_type, line, array_index=None, has_negative=False):
@@ -253,6 +282,7 @@ class CallExpr(exprNode):
         if func == None or func.value == None:
             self.errList.append((self.line, "function {} is undefined".format(self.name)))
             return None
+        self.data_type = func.type
         func = func.value
         args = []
         for param in self.params:
@@ -262,6 +292,14 @@ class CallExpr(exprNode):
                 self.errList += param.errList
                 return None
             args.append(p_val)
+    
+        if len(args) != len(func.args):
+            self.errList.append(
+                self.line, 
+                "passed {} arguments to function {}, expected {}".format(
+                    len(args),
+                    self.name,
+                    len(func.args)))
 
         return builder.call(func, args, name="res")
 
@@ -317,11 +355,22 @@ class AssignmentNode(parseTreeNode):
         if dest_val == None:
             self.errList += self.dest.errList
             return None
-
+        
+        # evaluate expr
         expr_val = self.expr.codegen(builder, symbolTable)
         if expr_val == None:
             self.errList += self.expr.errList
             return None
+
+        # handle case that expr is an element of an array
+        if isinstance(self.expr, VariableExpr):
+            if self.expr.array_index != None:
+                expr_val = builder.extract_value(expr_val, int(self.expr.array_index.value), name="itemTmp")
+
+        # handle case that dest is an element of an array
+        if isinstance(self.dest, VariableExpr):
+            if self.dest.array_index != None:
+                dest_val = builder.insert_value(dest_val, expr_val, int(self.dest.array_index.value), name="arrayTmp")
 
         symbol = Symbol(dest_name, expr_val, self.dest.data_type)
         if not symbolTable.update(symbol):
@@ -349,18 +398,26 @@ class declarationNode(parseTreeNode):
         return out
 
     def codegen(self, builder, symbolTable, module=None):
+
         ir_type = symbolTable.get_ir_type(self.type)
         if self.type == tkn.STRING_TYPE:
             val = ""
         else:
             val = 0
+
+        id_type = "variable"
         initial_val = ir.Constant(ir_type, val)
-        symbol = Symbol(self.name, initial_val, self.type)
+        if self.array_size != None:
+            id_type = "array"
+            initial_val = ir.Constant.literal_array([initial_val for _ in range(int(self.array_size.value))])
+
+        symbol = Symbol(self.name, initial_val, self.type, id_type)
         
         if symbolTable.add(symbol, is_global=self.is_global):
             return initial_val
         else:
-            self.errList.append(self.line, "duplicate declaration")
+            err_msg = "duplicate declaration of variable '{}'".format(self.name)
+            self.errList.append((self.line, err_msg))
             return None
 
 class IfNode(parseTreeNode):
@@ -512,7 +569,7 @@ class functionNode(parseTreeNode):
             func.args[i].name = self.params[i].name
         
         # add func to symboltable
-        symbol = Symbol(self.name, func, fType, id_type='function')
+        symbol = Symbol(self.name, func, self.retType, id_type='function')
         if not symbolTable.add(symbol):
             self.errList.append(self.line, "duplicate declaration")
             return None
@@ -530,11 +587,10 @@ class functionNode(parseTreeNode):
         func_builder = ir.IRBuilder(entryBB) 
         has_errors = False
         for statement in self.body:
-            res = statement.codegen(func_builder, symbolTable)
+            res = statement.codegen(func_builder, symbolTable, module)
             if res == None:
                 has_errors = True
-            else:
-                last_stmt = res
+                self.errList += statement.errList
             
         # remove local scope and handle errors
         symbolTable.popLocal()
@@ -542,8 +598,5 @@ class functionNode(parseTreeNode):
             self.errList += statement.errList
             return None
         elif not func_builder.block.is_terminated:
-            func_builder.ret(last_stmt) 
-            # not sure if this is defined anywhere in the language spec,
-            # but sample correct programs return values with no explicit return statement
-            # Im assuming then that an implicit return is allowed
+            self.errList.append((self.line, "expected return statement before end of function"))
         return func

@@ -15,6 +15,11 @@ class Parser():
 
     def reportError(self, message):
         print("Error L{}, C{}: {}".format(self.token.line, self.token.col, message))
+        self._has_errors = True
+
+    def reportWarning(self, message):
+        print("Warning L{}, C{}: {}".format(self.token.line, self.token.col, message))
+
 
     def reportUnexpectedToken(self, expected):
         self.reportError("expected token '{}', found: {}".format(expected, self.token))
@@ -78,7 +83,7 @@ class Parser():
                         self.reportError("tokens detected after program terminating symbol '.'")
                         return tkn.EOF # signal end of program (but with errors logged)
                 else:
-                    self.reportError("expected token '.' after end of program")
+                    self.reportWarning("expected token '.' after end of program")
                     return tkn.EOF
             else:
                 self.reportUnexpectedToken(expected='program')
@@ -501,6 +506,7 @@ class Parser():
         has_bool_not = False
         if self.token_is(tkn.BOOL_NOT,  consume=True):
             has_bool_not = True
+            line = self.token.line
 
         arithOp, err = self._parseNT_arithOp()
         if err:
@@ -509,6 +515,8 @@ class Parser():
         elif arithOp == None:
             # not an arithOp
             return None, has_bool_not # if BOOL_NOT is present then arithOp was expected, so flag err
+        elif has_bool_not:
+            return UnaryOpExpr(tkn.BOOL_NOT, arithOp, line)
         else:
             if self.token.type in [tkn.BOOL_AND, tkn.BOOL_OR]:
                 Op = self.token.type
@@ -610,11 +618,17 @@ class Parser():
         """
 
         if self.token_is(tkn.LEFT_PAREN, consume=True):
-            return self._parseNT_expression()
-        
+            res, err = self._parseNT_expression()
+
+            if self.token_is(tkn.RIGHT_PAREN, consume=True):
+                return res, err
+            else:
+                return res, True
+
         has_negative = False
         if self.token_is(tkn.OP_SUB, consume=True):
             has_negative = True
+            line = self.token.line
 
         if self.token_is(tkn.ID):
             call, err = self._parseNT_procedure_call()
@@ -630,11 +644,22 @@ class Parser():
                 if err:
                     return None, True
                 else:
-                    return VariableExpr(name, data_type=None, array_index=index, has_negative=has_negative, line=line), False
+                    res = VariableExpr(name, data_type=None, array_index=index, has_negative=has_negative, line=line)
+                    if has_negative:
+                        return UnaryOpExpr(tkn.OP_SUB, res, line), False
+                    else:
+                        return res, False
             else:
-                return call, False
+                if has_negative:
+                    return UnaryOpExpr(tkn.OP_SUB, call, line)
+                else:
+                    return call, False
         else:
-            return self._parse_literal()
+            res, err = self._parse_literal()
+            if has_negative and not err:
+                return UnaryOpExpr(tkn.OP_SUB, res, line), False
+            else:
+                return res, err
             
 
     def _parseNT_procedure_call(self):
@@ -678,12 +703,12 @@ if __name__ == '__main__':
     #fName = "../test/correct/iterativeFib.src"
     #fName = "../test/correct/math.src"
     #fName = "../test/correct/multipleProcs.src"
-    #fName = "../test/correct/recursiveFib.src"
+    fName = "../test/correct/recursiveFib.src"
     #fName = "../test/correct/source.src"
     #fName = "../test/correct/test_heap.src"
     #fName = "../test/correct/test_program_minimal.src"
     #fName = "../test/correct/test1.src"
-    fName = "../test/correct/test1b.src"
+    #fName = "../test/correct/test1b.src"
     #fName = "../test/correct/test2.src"
 
 
