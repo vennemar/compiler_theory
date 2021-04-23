@@ -14,6 +14,7 @@ class SymbolTable():
         self.globals = {}
         self.locals = [{}]
         self.namespaces = ['main']
+        self.nextUnique = 0 # for generating unique global identifiers
 
     def update(self, symbol):
         """ returns (result, err) as a tuple, err is None on a success"""
@@ -95,3 +96,9 @@ class SymbolTable():
             return ir.ArrayType(self.get_ir_type(tkn_type), length)
         else:
             return type_map[tkn_type]
+
+    def get_unique_name(self):
+        """ generate a unique identifier for anonymous global values"""
+        name = "main.{}".format(self.nextUnique)
+        self.nextUnique += 1
+        return name

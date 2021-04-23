@@ -213,9 +213,9 @@ class Scanner:
             else:
                 return Token(tkn.ID, token_start, value.lower())
 
-            # Unknown Token... no patterns match
-            self.reportError("unidentifiable token")
-            return Token(tkn.UNKNOWN, token_start)
+        # Unknown Token... no patterns match
+        self.reportError("Illegal character '{}'".format(c))
+        return Token(tkn.UNKNOWN, token_start)
 
 def main():
     """ for debugging the scanner """
@@ -223,7 +223,9 @@ def main():
     #fName = "../test/correct/iterativeFib.src"
     #fName = "../test/correct/logicals.src"
     #fName = "../test/correct/source.src"
-    fName = "../test/correct/test1b.src"
+    #fName = "../test/correct/test1b.src"
+
+    fName = "../test/incorrect/test2.src"
 
     if not path.exists(fName):
         print("file does not exist")

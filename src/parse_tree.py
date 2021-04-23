@@ -49,23 +49,27 @@ class BinOpExpr(exprNode):
 
     def codegen(self, builder, symbolTable, module=None):
         # codegen each operand and check for errors
-        LHS_val = self.LHS.codegen(builder, symbolTable)
+        LHS_val = self.LHS.codegen(builder, symbolTable, module)
         if not LHS_val:
             self.errList += self.LHS.errList
             return None
 
-        RHS_val = self.RHS.codegen(builder, symbolTable)
+        RHS_val = self.RHS.codegen(builder, symbolTable, module)
         if not RHS_val:
             self.errList += self.LHS.errList
             return None
         # handle array element extraction
         if isinstance(self.LHS, VariableExpr):
             if self.LHS.array_index != None:
-                LHS_val = builder.extract_value(LHS_val, int(self.LHS.array_index.value), name="itemTmp")
+                index_val = self.LHS.array_index.codegen(builder, symbolTable, module)
+                LHS_ptr = builder.gep(LHS_val, [index_val], name="indexPtr")
+                LHS_val = builder.load(LHS_ptr, name="arrayElement")
 
         if isinstance(self.RHS, VariableExpr):
             if self.RHS.array_index != None:
-                RHS_val = builder.extract_value(RHS_val, int(self.RHS.array_index.value), name="itemTmp")
+                index_val = self.RHS.array_index.codegen(builder, symbolTable, module)
+                RHS_ptr = builder.gep(RHS_val, [index_val], name="indexPtr")
+                RHS_val = builder.load(RHS_ptr, name="arrayElement")
 
         # check operands for type compatability, then
         # call llvm codegen for given operator and operand types
@@ -78,8 +82,8 @@ class BinOpExpr(exprNode):
                 tkn.OP_EQ : "==",
                 tkn.OP_NE : "!="
         }
-        if self.LHS.data_type == self.RHS.data_type:
-            if self.LHS.data_type == tkn.INT_TYPE:
+        if self.LHS.data_type == tkn.INT_TYPE and \
+           self.RHS.data_type == tkn.INT_TYPE:
                 # INTEGER operations
                 self.data_type = tkn.INT_TYPE
                 if self.Op == tkn.OP_ADD:
@@ -125,13 +129,27 @@ class BinOpExpr(exprNode):
                 self.data_type = tkn.BOOL_TYPE
                 return res
 
-        elif self.LHS.data_type == tkn.STRING_TYPE:
+        elif self.LHS.data_type == tkn.STRING_TYPE and \
+             self.RHS.data_type == tkn.STRING_TYPE:
             # STRING operations
             # strings have no operations defined by the language 
             # spec other than assignment and equality checking
             # strings are basically character arrays.
             if self.Op == tkn.OP_EQ:
-                pass # TODO
+                self.data_type = tkn.BOOL_TYPE
+                args = []
+                # parse params for string comparison function
+                for param, p_val in [(self.LHS, LHS_val), (self.RHS, RHS_val)]:
+                    if isinstance(param, LiteralExpr) and param.data_type == tkn.STRING_TYPE:
+                        # create a tmp variable to pass the string literal
+                        varName = symbolTable.get_unique_name()
+                        valuePtr = ir.GlobalVariable(module, ir.IntType(8), varName)
+                        valuePtr.initializer = p_val
+                        p_val = valuePtr
+                    args.append(p_val)
+                func = symbolTable.get("main.StringEquals").value
+                return builder.call(func, args, name="boolTmp")
+
         elif self.LHS.data_type == tkn.BOOL_TYPE and \
              self.RHS.data_type == tkn.BOOL_TYPE:
             # BOOL Operations
@@ -144,14 +162,13 @@ class BinOpExpr(exprNode):
                 return res
 
         # handle any undefined operations
-        err = "operation {} is not defined for types {} and {}".format(
+        err = "operation {} is not defined for operands of type {} and {}".format(
             self.Op, 
             self.LHS.data_type, 
             self.RHS.data_type)
         self.errList.append((self.line, err))
         return None
 
-            
 class UnaryOpExpr(exprNode):
     def __init__(self, Op, expr, line):
         self.Op = Op
@@ -168,7 +185,7 @@ class UnaryOpExpr(exprNode):
 
     def codegen(self, builder, symbolTable, module=None):
         # codegen each operand and check for errors
-        expr_val = self.expr.codegen(builder, symbolTable)
+        expr_val = self.expr.codegen(builder, symbolTable, module)
         if expr_val == None:
             self.errList += self.expr.errList
             return None
@@ -176,7 +193,10 @@ class UnaryOpExpr(exprNode):
         # handle array element extraction
         if isinstance(self.expr, VariableExpr):
             if self.expr.array_index != None:
-                expr_val = builder.extract_value(expr_val, int(self.expr.array_index.value), name="itemTmp")
+                index_val = self.expr.array_index.codegen(builder, symbolTable, module)
+                expr_ptr = builder.gep(expr_val, [index_val], name="indexPtr")
+                expr_val = builder.load(expr_ptr, name="arrayElement")
+                # expr_val = builder.extract_value(expr_val, int(self.expr.array_index.value), name="itemTmp")
 
         # check types and codegen
         self.data_type = self.expr.data_type
@@ -216,11 +236,6 @@ class VariableExpr(exprNode):
         return out
 
     def codegen(self, builder, symbolTable, module=None):
-        
-        if self.array_index != None:
-            pass
-            # TODO: handle arrays
-            # TODO: also handle has_negative ... may move to a UnaryOpExpr class
         res = symbolTable.get(self.name)
         if res == None:
             self.errList.append((self.line, "variable {} is undefined".format(self.name)))
@@ -287,7 +302,14 @@ class CallExpr(exprNode):
         args = []
         for param in self.params:
             # check type of arg matches expected type
-            p_val = param.codegen(builder, symbolTable)
+            p_val = param.codegen(builder, symbolTable, module)
+            if isinstance(param, LiteralExpr) and param.data_type == tkn.STRING_TYPE:
+                # create a tmp variable to pass the string literal
+                varName = symbolTable.get_unique_name()
+                valuePtr = ir.GlobalVariable(module, ir.IntType(8), varName)
+                valuePtr.initializer = p_val
+                p_val = valuePtr
+
             if p_val == None:
                 self.errList += param.errList
                 return None
@@ -319,7 +341,7 @@ class returnExpr(exprNode):
         return out
 
     def codegen(self, builder, symbolTable, module=None):
-        expr_val = self.expr.codegen(builder, symbolTable)
+        expr_val = self.expr.codegen(builder, symbolTable, module)
         if expr_val == None:
             self.errList += self.expr.errList
             return None
@@ -350,14 +372,14 @@ class AssignmentNode(parseTreeNode):
 
     def codegen(self, builder, symbolTable, module=None):
         # check that dest is defined
-        dest_val = self.dest.codegen(builder, symbolTable)
+        dest_val = self.dest.codegen(builder, symbolTable, module)
         dest_name = self.dest.name
         if dest_val == None:
             self.errList += self.dest.errList
             return None
         
         # evaluate expr
-        expr_val = self.expr.codegen(builder, symbolTable)
+        expr_val = self.expr.codegen(builder, symbolTable, module)
         if expr_val == None:
             self.errList += self.expr.errList
             return None
@@ -365,12 +387,19 @@ class AssignmentNode(parseTreeNode):
         # handle case that expr is an element of an array
         if isinstance(self.expr, VariableExpr):
             if self.expr.array_index != None:
-                expr_val = builder.extract_value(expr_val, int(self.expr.array_index.value), name="itemTmp")
+                index_val = self.expr.array_index.codegen(builder, symbolTable, module)
+                expr_ptr = builder.gep(expr_val, [index_val], name="indexPtr")
+                expr_val = builder.load(expr_ptr, name="arrayElement")
+                # expr_val = builder.extract_value(expr_val, int(self.expr.array_index.value), name="itemTmp")
 
         # handle case that dest is an element of an array
         if isinstance(self.dest, VariableExpr):
             if self.dest.array_index != None:
-                dest_val = builder.insert_value(dest_val, expr_val, int(self.dest.array_index.value), name="arrayTmp")
+                # dest_val does not get overwritten here bc the array pointer hasn't changed
+                index_val = self.dest.array_index.codegen(builder, symbolTable, module)
+                dest_ptr = builder.gep(dest_val, [index_val], name="destIndexPtr")
+                builder.store(expr_val, dest_ptr)
+                # dest_val = builder.insert_value(dest_val, expr_val, int(self.dest.array_index.value), name="arrayTmp")
 
         symbol = Symbol(dest_name, expr_val, self.dest.data_type)
         if not symbolTable.update(symbol):
@@ -402,14 +431,22 @@ class declarationNode(parseTreeNode):
         ir_type = symbolTable.get_ir_type(self.type)
         if self.type == tkn.STRING_TYPE:
             val = ""
+            if self.array_size == None:
+                # all strings are arrays O_O join us.
+                self.array_size = LiteralExpr(1, tkn.INT_TYPE, self.line)
         else:
             val = 0
 
         id_type = "variable"
         initial_val = ir.Constant(ir_type, val)
+        
         if self.array_size != None:
             id_type = "array"
-            initial_val = ir.Constant.literal_array([initial_val for _ in range(int(self.array_size.value))])
+            array_size = int(self.array_size.value)
+            arr_val = ir.Constant.literal_array([initial_val for _ in range(int(self.array_size.value))])
+            initial_val = builder.alloca(ir_type, array_size, name="arrayPtr")
+            initial_tmp_ptr = builder.bitcast(initial_val, ir.PointerType(ir.ArrayType(ir_type, array_size)))
+            builder.store(arr_val, initial_tmp_ptr)
 
         symbol = Symbol(self.name, initial_val, self.type, id_type)
         
@@ -446,7 +483,7 @@ class IfNode(parseTreeNode):
 
     def codegen(self, builder, symbolTable, module=None):
         
-        cond_val = self.condition.codegen(builder, symbolTable)
+        cond_val = self.condition.codegen(builder, symbolTable, module)
         if cond_val == None:
             self.errList += self.condition.errList
             return None
@@ -460,7 +497,7 @@ class IfNode(parseTreeNode):
             # codegen else block
             builder.position_at_start(elseBB)
             for statement in self.elseBlock: # pylint: disable=not-an-iterable
-                res = statement.codegen(builder, symbolTable)
+                res = statement.codegen(builder, symbolTable, module)
                 if res == None:
                     self.errList += statement.errList
             # branch to merge block at end of else
@@ -472,7 +509,7 @@ class IfNode(parseTreeNode):
         # codegen for then block
         builder.position_at_start(thenBB)
         for statement in self.thenBlock: # pylint: disable=not-an-iterable
-            res = statement.codegen(builder, symbolTable)
+            res = statement.codegen(builder, symbolTable, module)
             if res == None:
                 self.errList += statement.errList
         # branch to merge block at end of then block
@@ -506,12 +543,12 @@ class LoopNode(parseTreeNode):
 
     def codegen(self, builder, symbolTable, module=None):
         # evaluate start and end statements
-        start_val = self.start.codegen(builder, symbolTable)
+        start_val = self.start.codegen(builder, symbolTable, module)
         if start_val == None:
             self.errList += self.start.errList
             return None
         
-        end_val = self.end.codegen(builder, symbolTable)
+        end_val = self.end.codegen(builder, symbolTable, module)
         if end_val == None:
             self.errList += self.end.errList
             return None
@@ -527,7 +564,7 @@ class LoopNode(parseTreeNode):
         builder.position_at_start(loopBB)
 
         for statement in self.body:
-            res = statement.codegen(builder, symbolTable)
+            res = statement.codegen(builder, symbolTable, module)
             if res == None:
                 self.errList += statement.errList
 

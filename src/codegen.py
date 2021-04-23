@@ -10,7 +10,7 @@ from parser import Parser # pylint: disable=no-name-in-module
 # IR Builder                #
 # ========================= #
 
-class Builder():
+class ProgramBuilder():
     """ manages the in memory IR for LLVM """ 
     
     def __init__(self, input_fName, output_fName):
@@ -49,16 +49,17 @@ class Builder():
         """ create builtin get and put functions (empty for now)"""
         # name returnType Param
         builtins = [
-            ("putbool",    ir.VoidType(), [ir.IntType(1)]),
-            ("putstring",  ir.VoidType(), [ir.IntType(8)]),
-            ("putinteger", ir.VoidType(), [ir.IntType(32)]),
-            ("putfloat",   ir.VoidType(), [ir.FloatType()]),
-            ("getbool",    ir.IntType(1), []),
-            ("getstring",  ir.IntType(8), []),
-            ("getinteger", ir.IntType(32), []),
-            ("getfloat",   ir.FloatType(), [])
+            ("putbool",           ir.VoidType(),    [ir.IntType(1)]),
+            ("putstring",         ir.VoidType(),    [ir.PointerType(ir.IntType(8))]),
+            ("putinteger",        ir.VoidType(),    [ir.IntType(32)]),
+            ("putfloat",          ir.VoidType(),    [ir.FloatType()]),
+            ("getbool",           ir.IntType(1),    []),
+            ("getinteger",        ir.IntType(32),   []),
+            ("getfloat",          ir.FloatType(),   []),
+            ("main.StringEquals", ir.IntType(1),    [ir.PointerType(ir.IntType(8)),
+                                                     ir.PointerType(ir.IntType(8))]),
+            ("getstring",         ir.PointerType(ir.IntType(8)), [])                                        
         ]
-        # TODO figure out how to do array passing between functions for strings
 
         for entry in builtins:
             fType = ir.FunctionType(entry[1], entry[2])
@@ -70,7 +71,6 @@ class Builder():
         # signal return from main function
         # self.builder.ret_void()
         output = str(self.module)
-        print(output)
         with open(self.output_fName, "w") as fd:
             fd.write(output)
         
@@ -108,12 +108,11 @@ class Builder():
             self.output_ir()
         else:
             print("errors detected, compilation aborted")
-            self.output_ir()
 
 if __name__ == '__main__':
 
     # input_fName = "../test/correct/iterativeFib.src"
-    input_fName = "../test/correct/logicals.src" # TODO Fix string param passing
+    # input_fName = "../test/correct/logicals.src"
     # input_fName = "../test/correct/math.src"
     # input_fName = "../test/correct/multipleProcs.src"
     # input_fName = "../test/correct/recursiveFib.src"
@@ -124,10 +123,11 @@ if __name__ == '__main__':
     # input_fName = "../test/correct/test1b.src"
     # input_fName = "../test/correct/test2.src"
 
-    #input_fName = "../test/incorrect/test1.src"
+    # input_fName = "../test/incorrect/test1.src"
     # input_fName = "../test/incorrect/test1b.src"
+    input_fName = "../test/incorrect/test2.src"
 
     output_fName = "out.txt"
-    codegen = Builder(input_fName, output_fName)
+    codegen = ProgramBuilder(input_fName, output_fName)
     codegen.generate_module_code()
-    # GAAAAAHAHAHA
+    # print(str(codegen.module))
